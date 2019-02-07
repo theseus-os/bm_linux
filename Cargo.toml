@@ -5,3 +5,4 @@ authors = ["Minhong Yun <mhyun@rice.edu>"]
 edition = "2018"
 
 [dependencies]
+libc = "0.2"
