@@ -1,3 +1,4 @@
+#![feature(duration_as_u128)]
 extern crate libc;
 
 use std::env;
@@ -10,6 +11,10 @@ use std::io::{Read, Write, SeekFrom, Seek};
 const ITERATIONS: usize = 1_000;
 const TRIES: usize = 10;
 const THRESHOLD_ERROR_RATIO: f64 = 0.1;
+const MB_IN_KB: usize = 1024;
+const MB: usize = 1024 * 1024;
+const KB: usize = 1024;
+const SEC_TO_NANO: f64 = 1_000_000_000.0;
 
 // const T_UNIT: &str = "nano sec";
 
@@ -52,11 +57,11 @@ fn timing_overhead_inner(th: usize, nr: usize) -> f64 {
 	end = Instant::now();
 
 	let delta = end - start;
-	let delta_time = delta.subsec_nanos() as f64;
+	let delta_time = delta.as_nanos() as f64;
 	let delta_time_avg = delta_time / ITERATIONS as f64;
 
 	printlninfo!("t_overhead_inner ({}/{}): {} total -> {:.2} avg_ns (ignore: {})", 
-		th, nr, delta_time, delta_time_avg, temp.elapsed().subsec_nanos());
+		th, nr, delta_time, delta_time_avg, temp.elapsed().as_nanos());
 
 	delta_time_avg
 }
@@ -100,7 +105,7 @@ fn do_null_inner(overhead_ns: f64, th: usize, nr: usize) -> f64 {
 	end = Instant::now();
 
 	let delta = end - start;
-	let mut delta_time = delta.subsec_nanos() as f64;
+	let mut delta_time = delta.as_nanos() as f64;
 	if delta_time < overhead_ns {
 		printlnwarn!("Ignore overhead for null because overhead({:.2}) > diff({:.2})", 
 			overhead_ns, delta_time);
@@ -156,7 +161,7 @@ fn do_spawn_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'stati
     end = Instant::now();
 
     let delta = end - start;
-	let delta_time = delta.subsec_nanos() as f64 - overhead_ns;
+	let delta_time = delta.as_nanos() as f64 - overhead_ns;
 	let delta_time_avg = delta_time / ITERATIONS as f64;
 
     printlninfo!("spawn_test_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
@@ -192,7 +197,7 @@ fn do_spawn_inner_libc(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'
     end = Instant::now();
 
     let delta = end - start;
-	let delta_time = delta.subsec_nanos() as f64 - overhead_ns;
+	let delta_time = delta.as_nanos() as f64 - overhead_ns;
 	let delta_time_avg = delta_time / ITERATIONS as f64;
 
     printlninfo!("spawn_test_inner (libc) ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
@@ -229,12 +234,13 @@ fn do_spawn(rust_only: bool) {
 	printlninfo!("SPAWN result: {:.2} ns", lat);
 }
 
-fn do_fs_read_with_open_inner(filename: &str, overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
+fn do_fs_read_with_open_inner(filename: &str, overhead_ns: f64, th: usize, nr: usize) -> Result<(f64, f64, f64), &'static str> {
 	let start;
 	let end;
 	let mut dummy_sum: u64 = 0;
 	let mut buf = vec![0; READ_BUF_SIZE];
-	let mut unread_size = fs::metadata(filename).expect("Cannot stat the file").len() as i64;
+	let size = fs::metadata(filename).expect("Cannot stat the file").len() as i64;
+	let mut unread_size = size;
 
 	if unread_size % READ_BUF_SIZE as i64 != 0 {
 		return Err("File size is not alligned");
@@ -243,31 +249,39 @@ fn do_fs_read_with_open_inner(filename: &str, overhead_ns: f64, th: usize, nr: u
 	start = Instant::now();
 	for _ in 0..ITERATIONS 	{
 		let mut file = File::open(filename).expect("Cannot stat the file");
-
+		unread_size = size;
     	while unread_size > 0 {	// now read()
-        	let nr_read = file.read_to_end(&mut buf).expect("Cannot read");
-			unread_size -= nr_read as i64;
+        	file.read_exact(&mut buf).expect("Cannot read");
+			unread_size -= READ_BUF_SIZE as i64;
+
+			// LMbench based on C does the magic to cast a type from char to int
+			// But, we dont' have the luxury with type-safe Rust, so we do...
 			dummy_sum += buf.iter().fold(0 as u64, |acc, &x| acc + x as u64);
     	}
 	}
 	end = Instant::now();
 
 	let delta = end - start;
-	let delta_time = delta.subsec_nanos() as f64 - overhead_ns;
+	let delta_time = delta.as_nanos() as f64 - overhead_ns;
 	let delta_time_avg = delta_time / ITERATIONS as f64;
+	// let mb_per_sec = size as f64 / MB as f64 / (delta_time_avg / SEC_TO_NANO);
+	let mb_per_sec = (size as f64 * SEC_TO_NANO) / (MB as f64 * delta_time_avg);	// prefer this
+	let kb_per_sec = (size as f64 * SEC_TO_NANO) / (KB as f64 * delta_time_avg);
 
-	printlninfo!("read_with_open_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns (ignore: {})",
-		th, nr, delta_time, delta_time_avg, dummy_sum);
+	printlninfo!("read_with_open_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns || {:.3} MB/sec {:.3} KB/sec (ignore: {})",
+		th, nr, delta_time, delta_time_avg, mb_per_sec, kb_per_sec, dummy_sum);
 
-	Ok(delta_time_avg)
+	Ok((delta_time_avg, mb_per_sec, kb_per_sec))
 }
 
-fn do_fs_read_only_inner(filename: &str, overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
+// return: (time, MB/sec)
+fn do_fs_read_only_inner(filename: &str, overhead_ns: f64, th: usize, nr: usize) -> Result<(f64, f64, f64), &'static str> {
 	let start;
 	let end;
 	let mut dummy_sum: u64 = 0;
-	let mut buf = vec![0; READ_BUF_SIZE];
-	let mut unread_size = fs::metadata(filename).expect("Cannot stat the file").len() as i64;
+	let mut buf = vec![0 as u8; READ_BUF_SIZE];
+	let size = fs::metadata(filename).expect("Cannot stat the file").len() as i64;
+	let mut unread_size = size;
 
 	if unread_size % READ_BUF_SIZE as i64 != 0 {
 		return Err("File size is not alligned");
@@ -278,22 +292,29 @@ fn do_fs_read_only_inner(filename: &str, overhead_ns: f64, th: usize, nr: usize)
 	start = Instant::now();
 	for _ in 0..ITERATIONS 	{
 		file.seek(SeekFrom::Start(0)).expect("Cannot seek");
+		unread_size = size;
     	while unread_size > 0 {	// now read()
-        	let nr_read = file.read_to_end(&mut buf).expect("Cannot read");
-			unread_size -= nr_read as i64;
-			dummy_sum += buf.iter().fold(0 as u64, |acc, &x| acc + x as u64);
+        	file.read_exact(&mut buf).expect("Cannot read");
+			unread_size -= READ_BUF_SIZE as i64;
+			
+			// LMbench based on C does the magic to cast a type from char to int
+			// But, we dont' have the luxury with type-safe Rust, so we do...
+			dummy_sum += buf.iter().fold(0 as u64, |acc, &x| acc + x as u64);	
     	}
 	}	// for
 	end = Instant::now();
 
 	let delta = end - start;
-	let delta_time = delta.subsec_nanos() as f64 - overhead_ns;
+	let delta_time = delta.as_nanos() as f64 - overhead_ns;
 	let delta_time_avg = delta_time / ITERATIONS as f64;
+	// let naive_mb_per_sec = (size as f64 / MB as f64) / (delta_time_avg / SEC_TO_NANO);
+	let mb_per_sec = (size as f64 * SEC_TO_NANO) / (MB as f64 * delta_time_avg);	// prefer this
+	let kb_per_sec = (size as f64 * SEC_TO_NANO) / (KB as f64 * delta_time_avg);
 
-	printlninfo!("read_only_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns (ignore: {})",
-		th, nr, delta_time, delta_time_avg, dummy_sum);
+	printlninfo!("read_only_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns || {:.3} MB/sec {:.3} KB/sec (ignore: {}) ",
+		th, nr, delta_time, delta_time_avg, mb_per_sec, kb_per_sec, dummy_sum);
 
-	Ok(delta_time_avg)
+	Ok((delta_time_avg, mb_per_sec, kb_per_sec))
 }
 
 fn mk_tmp_file(filename: &str, sz: usize) -> Result<(), &'static str> {
@@ -312,6 +333,8 @@ fn mk_tmp_file(filename: &str, sz: usize) -> Result<(), &'static str> {
 
 fn do_fs_read_with_size(overhead_ns: f64, fsize_kb: usize, with_open: bool) {
 	let mut tries: f64 = 0.0;
+	let mut tries_mb: f64 = 0.0;
+	let mut tries_kb: f64 = 0.0;
 	let mut max: f64 = core::f64::MIN;
 	let mut min: f64 = core::f64::MAX;
 
@@ -319,33 +342,41 @@ fn do_fs_read_with_size(overhead_ns: f64, fsize_kb: usize, with_open: bool) {
 	mk_tmp_file(&filename, fsize_kb*1024).expect("Cannot create a file");
 
 	for i in 0..TRIES {
-		let lat = if with_open {
+		let (lat, tput_mb, tput_kb) = if with_open {
 			do_fs_read_with_open_inner(&filename, overhead_ns, i+1, TRIES).expect("Error in read_open inner()")
 		} else {
 			do_fs_read_only_inner(&filename, overhead_ns, i+1, TRIES).expect("Error in read_only inner()")
 		};
 
 		tries += lat;
+		tries_mb += tput_mb;
+		tries_kb += tput_kb;
 		if lat > max {max = lat;}
 		if lat < min {min = lat;}
 	}
 
 	let lat = tries / TRIES as f64;
+	let tput_mb = tries_mb / TRIES as f64;
+	let tput_kb = tries_kb / TRIES as f64;
 	let err = lat * THRESHOLD_ERROR_RATIO;
 	if 	max - lat > err || lat - min > err {
 		printlnwarn!("test diff is too big: {} ({} - {}) ns", max-min, max, min);
 	}
 
-	printlninfo!("{} for {} KB: {} ns", if with_open {"READ WITH OPEN"} else {"READ ONLY"}, fsize_kb, lat);
+	// printlninfo!("{} for {} KB: {} ns", if with_open {"READ WITH OPEN"} else {"READ ONLY"}, fsize_kb, lat);
+	printlninfo!("{} for {} KB: {} ns, {} MB/sec, {} KB/sec", 
+		if with_open {"READ WITH OPEN"} else {"READ ONLY"}, 
+		fsize_kb, lat, tput_mb, tput_kb);
 }
 
 fn do_fs_read(with_open: bool) {
+	printlninfo!("File size     : {:4} KB", MB_IN_KB);
+	printlninfo!("Read buf size : {:4} KB", READ_BUF_SIZE / 1024);
+	printlninfo!("========================================");
+
 	let overhead_ct = timing_overhead();
 
-	// min: 64K
-	for i in [64, 128, 256, 512, 1024].iter() {
-        do_fs_read_with_size(overhead_ct, *i, with_open);
-    }
+	do_fs_read_with_size(overhead_ct, MB_IN_KB, with_open);
 }
 
 fn do_fs_create_del() {
