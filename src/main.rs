@@ -6,7 +6,7 @@ use std::fs::{self, File};
 use std::time::Instant;
 use std::process::{self, Command, Stdio};
 use std::io::{Read, Write, SeekFrom, Seek};
-
+use std::path::Path;
 // const ITERATIONS: usize = 1_000_000;
 const ITERATIONS: usize = 1_000;
 const TRIES: usize = 10;
@@ -18,6 +18,11 @@ const SEC_TO_NANO: f64 = 1_000_000_000.0;
 
 // const T_UNIT: &str = "nano sec";
 
+// don't change it.
+const READ_BUF_SIZE: usize = 64*1024;
+const WRITE_BUF_SIZE: usize = 128*1024;
+const WRITE_BUF: [u8; WRITE_BUF_SIZE] = [65; WRITE_BUF_SIZE];
+
 macro_rules! printlninfo {
     ($fmt:expr) => (println!(concat!("BM-INFO: ", $fmt)));
     ($fmt:expr, $($arg:tt)*) => (println!(concat!("BM-INFO: ", $fmt), $($arg)*));
@@ -28,9 +33,6 @@ macro_rules! printlnwarn {
     ($fmt:expr, $($arg:tt)*) => (println!(concat!("BM-WARN: ", $fmt), $($arg)*));
 }
 
-
-// don't change it. 
-const READ_BUF_SIZE: usize = 64*1024;
 
 fn print_usage(prog: &String) {
 	printlninfo!("\nUsage: {} cmd", prog);
@@ -320,14 +322,15 @@ fn do_fs_read_only_inner(filename: &str, overhead_ns: f64, th: usize, nr: usize)
 fn mk_tmp_file(filename: &str, sz: usize) -> Result<(), &'static str> {
 	let mut file = File::create(filename).expect("Cannot create the file");
 
-	let mut output = String::new();
-	for i in 0..sz-1 {
-		output.push((i as u8 % 10 + 48) as char);
-	}
-	output.push('!'); // my magic char for the last byte
+	// let mut output = String::new();
+	// for i in 0..sz-1 {
+	// 	output.push((i as u8 % 10 + 48) as char);
+	// }
+	// output.push('!'); // my magic char for the last byte
 
-	file.write_all(output.as_bytes()).expect("File cannot be created.");
-	printlninfo!("{} is created.", filename);
+	// file.write_all(output.as_bytes()).expect("File cannot be created.");
+	file.write_all(&WRITE_BUF[0..sz]).expect("File cannot be created.");
+	// printlninfo!("{} is created.", filename);
 	Ok(())
 }
 
@@ -374,13 +377,89 @@ fn do_fs_read(with_open: bool) {
 	printlninfo!("Read buf size : {:4} KB", READ_BUF_SIZE / 1024);
 	printlninfo!("========================================");
 
-	let overhead_ct = timing_overhead();
+	let overhead_ns = timing_overhead();
 
-	do_fs_read_with_size(overhead_ct, MB_IN_KB, with_open);
+	do_fs_read_with_size(overhead_ns, MB_IN_KB, with_open);
+}
+
+fn del_or_err(filename: &str) -> Result<(), &'static str> {
+	let path = Path::new(filename);
+	if path.exists() {
+		fs::remove_file(path);
+	}
+
+	Ok(())
+}
+
+fn do_fs_create_del_inner(fsize_b: usize, overhead_ns: f64) -> Result<(), &'static str> {
+	let mut filenames = vec!["".to_string(); ITERATIONS];
+	let pid = getpid();
+	let start_create;
+	let end_create;
+	let start_del;
+	let end_del;
+
+
+	// populate filenames
+	for i in 0..ITERATIONS {
+		filenames[i] = format!("tmp_{}_{}_{}.txt", pid, fsize_b, i);
+	}
+
+	// check if we have enough data to write. We use just const data to avoid unnecessary overhead
+	if fsize_b > WRITE_BUF_SIZE {
+		// don't put this into mk_tmp_file() or the loop below
+		// mk_tmp_file() and the loop below must be minimal for create/del benchmark
+		return Err("Cannot test because the file size is too big");
+	}
+
+	// delete existing files. To make sure that the file creation below succeeds.
+	for filename in &filenames {
+		del_or_err(filename).expect("Cannot continue the test. We need 'delete()'.");
+	}
+
+	// create
+	start_create = Instant::now();
+	for filename in &filenames {
+		// checking if filename exists is done above
+		// here, we only create files
+
+		// we don't use mk_tmp_file() intentionally.
+		File::create(filename).expect("Cannot create the file")
+			.write_all(&WRITE_BUF[0..fsize_b]).expect("File cannot be created.");
+	}
+	end_create = Instant::now();
+
+	// delete
+	start_del = Instant::now();
+	for filename in filenames {
+		fs::remove_file(filename);
+	}
+	end_del = Instant::now();
+
+	let delta_create = end_create - start_create;
+	let delta_time_create = delta_create.as_nanos() as f64 - overhead_ns;
+	let files_per_time_create = (ITERATIONS * ITERATIONS) as f64 * SEC_TO_NANO / delta_time_create;
+
+	let delta_del = end_del - start_del;
+	let delta_time_del = delta_del.as_nanos() as f64 - overhead_ns;
+	let files_per_time_del = (ITERATIONS * ITERATIONS) as f64 * SEC_TO_NANO / delta_time_del;
+
+	printlninfo!("{:8}    {:9}    {:16.2}    {:16.2}", 
+		fsize_b/KB as usize, ITERATIONS, files_per_time_create, files_per_time_del);
+	Ok(())
 }
 
 fn do_fs_create_del() {
-	printlninfo!("Cannot test without MemFile::Delete()...");
+	// let	fsizes_b = [0 as usize, 1024, 4096, 10*1024];	// Theseus thinks creating an empty file is stupid (for memfs)
+	let	fsizes_b = [1024_usize, 4096, 10*1024];
+
+	let overhead_ns = timing_overhead();
+
+	printlninfo!("SIZE(KB)    Iteration    created(files/s)    deleted(files/s)");
+	// printlninfo!("SIZE(KB)    Iteration    created(files/s)");
+	for fsize_b in fsizes_b.iter() {
+		do_fs_create_del_inner(*fsize_b, overhead_ns).expect("Cannot test File Create & Del");
+	}
 }
 
 fn print_header() {
