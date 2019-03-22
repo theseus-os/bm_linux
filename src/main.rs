@@ -20,7 +20,7 @@ const SEC_TO_NANO: f64 = 1_000_000_000.0;
 
 // don't change it.
 const READ_BUF_SIZE: usize = 64*1024;
-const WRITE_BUF_SIZE: usize = 128*1024;
+const WRITE_BUF_SIZE: usize = 1024*1024;
 const WRITE_BUF: [u8; WRITE_BUF_SIZE] = [65; WRITE_BUF_SIZE];
 
 macro_rules! printlninfo {
@@ -320,6 +320,10 @@ fn do_fs_read_only_inner(filename: &str, overhead_ns: f64, th: usize, nr: usize)
 }
 
 fn mk_tmp_file(filename: &str, sz: usize) -> Result<(), &'static str> {
+	if sz > WRITE_BUF_SIZE {
+		return Err("Cannot test because the file size is too big");
+	}
+
 	let mut file = File::create(filename).expect("Cannot create the file");
 
 	// let mut output = String::new();
@@ -342,6 +346,7 @@ fn do_fs_read_with_size(overhead_ns: f64, fsize_kb: usize, with_open: bool) {
 	let mut min: f64 = core::f64::MAX;
 
 	let filename = format!("./tmp_{}k.txt", fsize_kb);
+	// printlninfo!("Creating {} KB or {} B", fsize_kb, fsize_kb*1024);
 	mk_tmp_file(&filename, fsize_kb*1024).expect("Cannot create a file");
 
 	for i in 0..TRIES {
