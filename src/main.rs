@@ -1,5 +1,7 @@
 #![feature(duration_as_u128)]
 extern crate libc;
+extern crate hwloc;
+
 
 use std::env;
 use std::fs::{self, File};
@@ -7,6 +9,9 @@ use std::time::Instant;
 use std::process::{self, Command, Stdio};
 use std::io::{Read, Write, SeekFrom, Seek};
 use std::path::Path;
+use std::{thread, time};
+use hwloc::{Topology, ObjectType, CPUBIND_THREAD, CpuSet};
+
 // const ITERATIONS: usize = 1_000_000;
 const ITERATIONS: usize = 1_000;
 const TRIES: usize = 10;
@@ -15,6 +20,7 @@ const MB_IN_KB: usize = 1024;
 const MB: usize = 1024 * 1024;
 const KB: usize = 1024;
 const SEC_TO_NANO: f64 = 1_000_000_000.0;
+
 
 // const T_UNIT: &str = "nano sec";
 
@@ -221,6 +227,107 @@ fn do_spawn(rust_only: bool) {
 		} else {
 			do_spawn_inner_libc(overhead_ns, i+1, TRIES).expect("Error in spawn inner()")
 		};
+
+		tries += lat;
+		if lat > max {max = lat;}
+		if lat < min {min = lat;}
+	}
+
+	let lat = tries / TRIES as f64;
+	let err = lat * THRESHOLD_ERROR_RATIO;
+	if 	max - lat > err || lat - min > err {
+		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
+	}
+
+	printlninfo!("SPAWN result: {:.2} ns", lat);
+}
+
+fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
+    let cores = (*topology).objects_with_type(&ObjectType::Core).unwrap();
+    match cores.get(idx) {
+        Some(val) => val.cpuset().unwrap(),
+        None => panic!("No Core found with id {}", idx)
+    }
+}
+
+fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
+    let start;
+    let intermediate;
+	let end;
+
+	start = Instant::now();
+
+		let handler1 = thread::spawn(|| {
+    		// for _ in 0..ITERATIONS 	{
+    		// 	thread::yield_now();
+    		// }
+		});
+		let handler2 = thread::spawn(|| {
+    		// for _ in 0..ITERATIONS 	{
+    		// 	thread::yield_now();
+    		// }
+		});
+		handler1.join().unwrap();
+		handler2.join().unwrap();
+
+	intermediate = Instant::now();
+
+	let topo = Arc::new(Mutex::new(Topology::new()));
+
+    let num_cores = {
+        let topo_rc = topo.clone();
+        let topo_locked = topo_rc.lock().unwrap();
+        (*topo_locked).objects_with_type(&ObjectType::Core).unwrap().len()
+    };
+
+    println!("Found {} cores.", num_cores);
+
+		let child_topo = topo.clone();
+
+		let handler3 = thread::spawn(|| {
+			let tid = unsafe { libc::pthread_self() };
+            let mut locked_topo = child_topo.lock().unwrap();
+            let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
+            let bind_to = cpuset_for_core(&*locked_topo, 4);
+            locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
+            let after = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
+			println!("Thread {}: Before {:?}, After {:?}", i, before, after);
+
+    		for _ in 0..ITERATIONS 	{
+    			thread::yield_now();
+    		}
+		});
+		let handler4 = thread::spawn(|| {
+    		for _ in 0..ITERATIONS 	{
+    			thread::yield_now();
+    		}
+		});
+		handler1.join().unwrap();
+		handler2.join().unwrap();
+
+    end = Instant::now();
+
+    let overhead_delta = intermediate - start;
+    let delta = end - intermediate;
+	let delta_time = delta.as_nanos() as f64;
+	let delta_time_avg = delta_time / ITERATIONS as f64;
+
+    printlninfo!("do_ctx_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
+		th, nr, delta_time, delta_time_avg);
+
+	Ok(delta_time_avg)
+}
+
+
+fn do_ctx() {
+	let mut tries: f64 = 0.0;
+	let mut max: f64 = core::f64::MIN;
+	let mut min: f64 = core::f64::MAX;
+
+	let overhead_ns = timing_overhead();
+	
+	for i in 0..TRIES {
+		let lat = do_ctx_inner(overhead_ns, i+1, TRIES).expect("Error in spawn inner()");
 
 		tries += lat;
 		if lat > max {max = lat;}
@@ -505,6 +612,9 @@ fn main() {
     	}
     	"fs_create" | "fs3" => {
     		do_fs_create_del();
+    	}
+    	"ctx" | "fs3" => {
+    		do_ctx();
     	}
     	"exec" => {
     		do_spawn(false /*rust only*/);
