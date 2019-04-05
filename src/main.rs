@@ -1,6 +1,6 @@
 #![feature(duration_as_u128)]
 extern crate libc;
-extern crate hwloc;
+// extern crate hwloc;
 
 
 use std::env;
@@ -10,7 +10,10 @@ use std::process::{self, Command, Stdio};
 use std::io::{Read, Write, SeekFrom, Seek};
 use std::path::Path;
 use std::{thread, time};
-use hwloc::{Topology, ObjectType, CPUBIND_THREAD, CpuSet};
+
+use std::sync::mpsc::{Sender, Receiver};
+use std::sync::mpsc;
+// use hwloc::{Topology, ObjectType, CPUBIND_THREAD, CpuSet};
 
 // const ITERATIONS: usize = 1_000_000;
 const ITERATIONS: usize = 1_000;
@@ -242,78 +245,111 @@ fn do_spawn(rust_only: bool) {
 	printlninfo!("SPAWN result: {:.2} ns", lat);
 }
 
-fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
-    let cores = (*topology).objects_with_type(&ObjectType::Core).unwrap();
-    match cores.get(idx) {
-        Some(val) => val.cpuset().unwrap(),
-        None => panic!("No Core found with id {}", idx)
-    }
-}
+// fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
+//     let cores = (*topology).objects_with_type(&ObjectType::Core).unwrap();
+//     match cores.get(idx) {
+//         Some(val) => val.cpuset().unwrap(),
+//         None => panic!("No Core found with id {}", idx)
+//     }
+// }
+
 
 fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
     let start;
     let intermediate;
 	let end;
 
-	start = Instant::now();
+	let (tx1, rx1): (Sender<i32>, Receiver<i32>) = mpsc::channel();
+    let (tx2, rx2): (Sender<i32>, Receiver<i32>) = mpsc::channel();
+    let (tx3, rx3): (Sender<i32>, Receiver<i32>) = mpsc::channel();
+    let (tx4, rx4): (Sender<i32>, Receiver<i32>) = mpsc::channel();
 
-		let handler1 = thread::spawn(|| {
-    		// for _ in 0..ITERATIONS 	{
-    		// 	thread::yield_now();
-    		// }
-		});
-		let handler2 = thread::spawn(|| {
-    		// for _ in 0..ITERATIONS 	{
-    		// 	thread::yield_now();
-    		// }
-		});
-		handler1.join().unwrap();
-		handler2.join().unwrap();
 
-	intermediate = Instant::now();
+		start = Instant::now();
 
-	let topo = Arc::new(Mutex::new(Topology::new()));
 
-    let num_cores = {
-        let topo_rc = topo.clone();
-        let topo_locked = topo_rc.lock().unwrap();
-        (*topo_locked).objects_with_type(&ObjectType::Core).unwrap().len()
-    };
+    		// Each thread will send its id via the channel
+        let child3 = thread::spawn(move || {
+            // The thread takes ownership over `thread_tx`
+            // Each thread queues a message in the channel
 
-    println!("Found {} cores.", num_cores);
+            for id in 0..ITERATIONS {
+            	tx3.send(id as i32).unwrap();
+            	let _res = rx3.recv().unwrap();
+            	// println!("thread {} send", id);
+            }
 
-		let child_topo = topo.clone();
+            // Sending is a non-blocking operation, the thread will continue
+            // immediately after sending its message
+            
+        });
 
-		let handler3 = thread::spawn(|| {
-			let tid = unsafe { libc::pthread_self() };
-            let mut locked_topo = child_topo.lock().unwrap();
-            let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
-            let bind_to = cpuset_for_core(&*locked_topo, 4);
-            locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
-            let after = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
-			println!("Thread {}: Before {:?}, After {:?}", i, before, after);
+        child3.join().expect("oops! the child thread panicked");
 
-    		for _ in 0..ITERATIONS 	{
-    			thread::yield_now();
-    		}
-		});
-		let handler4 = thread::spawn(|| {
-    		for _ in 0..ITERATIONS 	{
-    			thread::yield_now();
-    		}
-		});
-		handler1.join().unwrap();
-		handler2.join().unwrap();
+        let child4 = thread::spawn(move || {
+            // The thread takes ownership over `thread_tx`
+            // Each thread queues a message in the channel
+
+            for id in 0..ITERATIONS {
+            	tx4.send(id as i32).unwrap();
+            	let _res = rx4.recv().unwrap();
+            	// println!("thread {} send", id);
+            }
+
+            // Sending is a non-blocking operation, the thread will continue
+            // immediately after sending its message
+            
+        });
+
+        child4.join().expect("oops! the child thread panicked");
+
+    	intermediate = Instant::now();
+
+
+        // Each thread will send its id via the channel
+        let child1 = thread::spawn(move || {
+            // The thread takes ownership over `thread_tx`
+            // Each thread queues a message in the channel
+            for id in 0..ITERATIONS {
+            	tx1.send(id as i32).unwrap();
+            	let _res = rx2.recv().unwrap();
+            	// println!("thread {} send", id);
+            }
+
+            // Sending is a non-blocking operation, the thread will continue
+            // immediately after sending its message
+            
+        });
+
+
+
+        // Each thread will send its id via the channel
+        let child2 = thread::spawn(move || {
+            // The thread takes ownership over `thread_tx`
+            // Each thread queues a message in the channel
+            for id in 0..ITERATIONS {
+            	let id = rx1.recv().unwrap();
+            	tx2.send(id as i32).unwrap();
+            	// println!("thread {} received", id);
+            }
+            // Sending is a non-blocking operation, the thread will continue
+            // immediately after sending its message
+        });
+
+
+    child1.join().expect("oops! the child thread panicked");
+    child2.join().expect("oops! the child thread panicked");
 
     end = Instant::now();
 
     let overhead_delta = intermediate - start;
-    let delta = end - intermediate;
+    let overhead_time = overhead_delta.as_nanos() as f64;
+    let delta = end - intermediate - overhead_delta;
 	let delta_time = delta.as_nanos() as f64;
-	let delta_time_avg = delta_time / ITERATIONS as f64;
+	let delta_time_avg = delta_time / (ITERATIONS*2) as f64;
 
-    printlninfo!("do_ctx_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
-		th, nr, delta_time, delta_time_avg);
+    printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
+		th, nr, overhead_time, delta_time, delta_time_avg);
 
 	Ok(delta_time_avg)
 }
