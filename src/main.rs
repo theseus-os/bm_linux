@@ -426,7 +426,159 @@ fn do_ctx() {
 		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
 	}
 
-	printlninfo!("SPAWN result: {:.2} ns", lat);
+	printlninfo!("CTX result: {:.2} ns", lat);
+}
+
+fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
+    let start;
+    let intermediate;
+	let end;
+
+	let (tx1, rx1): (Sender<i32>, Receiver<i32>) = mpsc::channel();
+    let (tx2, rx2): (Sender<i32>, Receiver<i32>) = mpsc::channel();
+    let (tx3, rx3): (Sender<i32>, Receiver<i32>) = mpsc::channel();
+    let (tx4, rx4): (Sender<i32>, Receiver<i32>) = mpsc::channel();
+
+    let topo = Arc::new(Mutex::new(Topology::new()));
+
+    let num_cores = {
+        let topo_rc = topo.clone();
+        let topo_locked = topo_rc.lock().unwrap();
+        (*topo_locked).objects_with_type(&ObjectType::Core).unwrap().len()
+    };
+    // println!("Found {} cores.", num_cores);
+
+    	let child_topo3 = topo.clone();
+    	let child_topo4 = topo.clone();
+    	let child_topo1 = topo.clone();
+    	let child_topo2 = topo.clone();
+
+
+		start = Instant::now();
+
+
+    		// Each thread will send its id via the channel
+        let child3 = thread::spawn(move || {
+            // The thread takes ownership over `thread_tx`
+            // Each thread queues a message in the channel
+
+            let tid = unsafe { libc::pthread_self() };
+            let mut locked_topo = child_topo3.lock().unwrap();
+            // let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
+            let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
+            locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
+            // let after = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
+            // println!("Thread {}: Before {:?}, After {:?}", 3 , before, after);
+            
+        });
+
+        child3.join().expect("oops! the child thread panicked");
+
+        let child4 = thread::spawn(move || {
+            // The thread takes ownership over `thread_tx`
+            // Each thread queues a message in the channel
+
+            let tid = unsafe { libc::pthread_self() };
+            let mut locked_topo = child_topo4.lock().unwrap();
+            // let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
+            let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
+            locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
+
+            // Sending is a non-blocking operation, the thread will continue
+            // immediately after sending its message
+            
+        });
+
+        child4.join().expect("oops! the child thread panicked");
+
+    	intermediate = Instant::now();
+
+    	// println!("Hello");
+
+
+        // Each thread will send its id via the channel
+        let child1 = thread::spawn(move || {
+            // The thread takes ownership over `thread_tx`
+            // Each thread queues a message in the channel
+            {
+            	let tid = unsafe { libc::pthread_self() };
+            	let mut locked_topo = child_topo1.lock().unwrap();
+            	// let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
+            	let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
+            	locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
+            }
+
+            for id in 0..ITERATIONS {
+            	thread::yield_now();
+            }
+
+            // Sending is a non-blocking operation, the thread will continue
+            // immediately after sending its message
+            
+        });
+
+
+
+        // Each thread will send its id via the channel
+        let child2 = thread::spawn(move || {
+            // The thread takes ownership over `thread_tx`
+            // Each thread queues a message in the channel
+            {
+            	let tid = unsafe { libc::pthread_self() };
+            	let mut locked_topo = child_topo2.lock().unwrap();
+            	// let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
+            	let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
+            	locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
+            }
+
+            for id in 0..ITERATIONS {
+            	thread::yield_now();
+            }
+            // Sending is a non-blocking operation, the thread will continue
+            // immediately after sending its message
+        });
+
+
+    child1.join().expect("oops! the child thread panicked");
+    child2.join().expect("oops! the child thread panicked");
+
+    end = Instant::now();
+
+    let overhead_delta = intermediate - start;
+    let overhead_time = overhead_delta.as_nanos() as f64;
+    let delta = end - intermediate - overhead_delta;
+	let delta_time = delta.as_nanos() as f64;
+	let delta_time_avg = delta_time / (ITERATIONS*2) as f64;
+
+    printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
+		th, nr, overhead_time, delta_time, delta_time_avg);
+
+	Ok(delta_time_avg)
+}
+
+
+fn do_ctx_yield() {
+	let mut tries: f64 = 0.0;
+	let mut max: f64 = core::f64::MIN;
+	let mut min: f64 = core::f64::MAX;
+
+	let overhead_ns = timing_overhead();
+	
+	for i in 0..TRIES {
+		let lat = do_ctx_yield_inner(overhead_ns, i+1, TRIES).expect("Error in spawn inner()");
+
+		tries += lat;
+		if lat > max {max = lat;}
+		if lat < min {min = lat;}
+	}
+
+	let lat = tries / TRIES as f64;
+	let err = lat * THRESHOLD_ERROR_RATIO;
+	if 	max - lat > err || lat - min > err {
+		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
+	}
+
+	printlninfo!("CTX result: {:.2} ns", lat);
 }
 
 fn do_fs_read_with_open_inner(filename: &str, overhead_ns: f64, th: usize, nr: usize) -> Result<(f64, f64, f64), &'static str> {
@@ -699,8 +851,11 @@ fn main() {
     	"fs_create" | "fs3" => {
     		do_fs_create_del();
     	}
-    	"ctx" | "fs3" => {
+    	"ctx" => {
     		do_ctx();
+    	}
+    	"ctx_yield" => {
+    		do_ctx_yield();
     	}
     	"exec" => {
     		do_spawn(false /*rust only*/);
