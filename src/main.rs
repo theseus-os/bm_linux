@@ -1,6 +1,6 @@
 #![feature(duration_as_u128)]
 extern crate libc;
-// extern crate hwloc;
+extern crate hwloc;
 
 
 use std::env;
@@ -13,7 +13,8 @@ use std::{thread, time};
 
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
-// use hwloc::{Topology, ObjectType, CPUBIND_THREAD, CpuSet};
+use hwloc::{Topology, ObjectType, CPUBIND_THREAD, CpuSet};
+use std::sync::{Arc,Mutex};
 
 // const ITERATIONS: usize = 1_000_000;
 const ITERATIONS: usize = 1_000;
@@ -245,13 +246,13 @@ fn do_spawn(rust_only: bool) {
 	printlninfo!("SPAWN result: {:.2} ns", lat);
 }
 
-// fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
-//     let cores = (*topology).objects_with_type(&ObjectType::Core).unwrap();
-//     match cores.get(idx) {
-//         Some(val) => val.cpuset().unwrap(),
-//         None => panic!("No Core found with id {}", idx)
-//     }
-// }
+fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
+    let cores = (*topology).objects_with_type(&ObjectType::Core).unwrap();
+    match cores.get(idx) {
+        Some(val) => val.cpuset().unwrap(),
+        None => panic!("No Core found with id {}", idx)
+    }
+}
 
 
 fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
@@ -264,6 +265,20 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
     let (tx3, rx3): (Sender<i32>, Receiver<i32>) = mpsc::channel();
     let (tx4, rx4): (Sender<i32>, Receiver<i32>) = mpsc::channel();
 
+    let topo = Arc::new(Mutex::new(Topology::new()));
+
+    let num_cores = {
+        let topo_rc = topo.clone();
+        let topo_locked = topo_rc.lock().unwrap();
+        (*topo_locked).objects_with_type(&ObjectType::Core).unwrap().len()
+    };
+    // println!("Found {} cores.", num_cores);
+
+    	let child_topo3 = topo.clone();
+    	let child_topo4 = topo.clone();
+    	let child_topo1 = topo.clone();
+    	let child_topo2 = topo.clone();
+
 
 		start = Instant::now();
 
@@ -272,6 +287,15 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
         let child3 = thread::spawn(move || {
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
+
+            let tid = unsafe { libc::pthread_self() };
+            let mut locked_topo = child_topo3.lock().unwrap();
+            // let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
+            let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
+            locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
+            // let after = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
+            // println!("Thread {}: Before {:?}, After {:?}", 3 , before, after);
+
 
             for id in 0..ITERATIONS {
             	tx3.send(id as i32).unwrap();
@@ -290,6 +314,12 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
 
+            let tid = unsafe { libc::pthread_self() };
+            let mut locked_topo = child_topo4.lock().unwrap();
+            // let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
+            let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
+            locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
+
             for id in 0..ITERATIONS {
             	tx4.send(id as i32).unwrap();
             	let _res = rx4.recv().unwrap();
@@ -305,13 +335,24 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
 
     	intermediate = Instant::now();
 
+    	// println!("Hello");
+
 
         // Each thread will send its id via the channel
         let child1 = thread::spawn(move || {
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
+            {
+            	let tid = unsafe { libc::pthread_self() };
+            	let mut locked_topo = child_topo1.lock().unwrap();
+            	// let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
+            	let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
+            	locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
+            }
+
             for id in 0..ITERATIONS {
             	tx1.send(id as i32).unwrap();
+            	// println!("send");
             	let _res = rx2.recv().unwrap();
             	// println!("thread {} send", id);
             }
@@ -327,7 +368,16 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
         let child2 = thread::spawn(move || {
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
+            {
+            	let tid = unsafe { libc::pthread_self() };
+            	let mut locked_topo = child_topo2.lock().unwrap();
+            	// let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
+            	let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
+            	locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
+            }
+
             for id in 0..ITERATIONS {
+            	// println!("ready to receive");
             	let id = rx1.recv().unwrap();
             	tx2.send(id as i32).unwrap();
             	// println!("thread {} received", id);
