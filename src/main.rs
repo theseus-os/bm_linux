@@ -1,6 +1,7 @@
 #![feature(duration_as_u128)]
 extern crate libc;
 extern crate hwloc;
+extern crate core_affinity;
 
 
 use std::env;
@@ -17,7 +18,7 @@ use hwloc::{Topology, ObjectType, CPUBIND_THREAD, CpuSet};
 use std::sync::{Arc,Mutex};
 
 // const ITERATIONS: usize = 1_000_000;
-const ITERATIONS: usize = 1_000;
+const ITERATIONS: usize = 1_000_0;
 const TRIES: usize = 10;
 const THRESHOLD_ERROR_RATIO: f64 = 0.1;
 const MB_IN_KB: usize = 1024;
@@ -265,20 +266,12 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
     let (tx3, rx3): (Sender<i32>, Receiver<i32>) = mpsc::channel();
     let (tx4, rx4): (Sender<i32>, Receiver<i32>) = mpsc::channel();
 
-    let topo = Arc::new(Mutex::new(Topology::new()));
-
-    let num_cores = {
-        let topo_rc = topo.clone();
-        let topo_locked = topo_rc.lock().unwrap();
-        (*topo_locked).objects_with_type(&ObjectType::Core).unwrap().len()
-    };
     // println!("Found {} cores.", num_cores);
-
-    	let child_topo3 = topo.clone();
-    	let child_topo4 = topo.clone();
-    	let child_topo1 = topo.clone();
-    	let child_topo2 = topo.clone();
-
+    let core_ids = core_affinity::get_core_ids().unwrap();
+    let id3 = core_ids[2];
+    let id4 = id3.clone();
+    let id2 = id3.clone();
+    let id1 = id3.clone();
 
 		start = Instant::now();
 
@@ -287,14 +280,8 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
         let child3 = thread::spawn(move || {
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
-
-            let tid = unsafe { libc::pthread_self() };
-            let mut locked_topo = child_topo3.lock().unwrap();
-            // let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
-            let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
-            locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
-            // let after = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
-            // println!("Thread {}: Before {:?}, After {:?}", 3 , before, after);
+            core_affinity::set_for_current(id3);
+            
 
 
             for id in 0..ITERATIONS {
@@ -313,12 +300,8 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
         let child4 = thread::spawn(move || {
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
-
-            let tid = unsafe { libc::pthread_self() };
-            let mut locked_topo = child_topo4.lock().unwrap();
-            // let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
-            let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
-            locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
+            core_affinity::set_for_current(id4);
+            
 
             for id in 0..ITERATIONS {
             	tx4.send(id as i32).unwrap();
@@ -342,13 +325,7 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
         let child1 = thread::spawn(move || {
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
-            {
-            	let tid = unsafe { libc::pthread_self() };
-            	let mut locked_topo = child_topo1.lock().unwrap();
-            	// let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
-            	let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
-            	locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
-            }
+            core_affinity::set_for_current(id1);
 
             for id in 0..ITERATIONS {
             	tx1.send(id as i32).unwrap();
@@ -368,13 +345,7 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
         let child2 = thread::spawn(move || {
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
-            {
-            	let tid = unsafe { libc::pthread_self() };
-            	let mut locked_topo = child_topo2.lock().unwrap();
-            	// let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
-            	let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
-            	locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
-            }
+            core_affinity::set_for_current(id1);
 
             for id in 0..ITERATIONS {
             	// println!("ready to receive");
@@ -439,20 +410,11 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
     let (tx3, rx3): (Sender<i32>, Receiver<i32>) = mpsc::channel();
     let (tx4, rx4): (Sender<i32>, Receiver<i32>) = mpsc::channel();
 
-    let topo = Arc::new(Mutex::new(Topology::new()));
-
-    let num_cores = {
-        let topo_rc = topo.clone();
-        let topo_locked = topo_rc.lock().unwrap();
-        (*topo_locked).objects_with_type(&ObjectType::Core).unwrap().len()
-    };
-    // println!("Found {} cores.", num_cores);
-
-    	let child_topo3 = topo.clone();
-    	let child_topo4 = topo.clone();
-    	let child_topo1 = topo.clone();
-    	let child_topo2 = topo.clone();
-
+    let core_ids = core_affinity::get_core_ids().unwrap();
+    let id3 = core_ids[2];
+    let id4 = id3.clone();
+    let id2 = id3.clone();
+    let id1 = id3.clone();
 
 		start = Instant::now();
 
@@ -462,13 +424,7 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
 
-            let tid = unsafe { libc::pthread_self() };
-            let mut locked_topo = child_topo3.lock().unwrap();
-            // let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
-            let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
-            locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
-            // let after = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
-            // println!("Thread {}: Before {:?}, After {:?}", 3 , before, after);
+            core_affinity::set_for_current(id3);
             
         });
 
@@ -478,14 +434,7 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
 
-            let tid = unsafe { libc::pthread_self() };
-            let mut locked_topo = child_topo4.lock().unwrap();
-            // let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
-            let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
-            locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
-
-            // Sending is a non-blocking operation, the thread will continue
-            // immediately after sending its message
+            core_affinity::set_for_current(id4);
             
         });
 
@@ -500,13 +449,7 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
         let child1 = thread::spawn(move || {
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
-            {
-            	let tid = unsafe { libc::pthread_self() };
-            	let mut locked_topo = child_topo1.lock().unwrap();
-            	// let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
-            	let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
-            	locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
-            }
+            core_affinity::set_for_current(id1);
 
             for id in 0..ITERATIONS {
             	thread::yield_now();
@@ -523,13 +466,7 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
         let child2 = thread::spawn(move || {
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
-            {
-            	let tid = unsafe { libc::pthread_self() };
-            	let mut locked_topo = child_topo2.lock().unwrap();
-            	// let before = locked_topo.get_cpubind_for_thread(tid, CPUBIND_THREAD);
-            	let bind_to = cpuset_for_core(&*locked_topo, num_cores - 1);
-            	locked_topo.set_cpubind_for_thread(tid, bind_to, CPUBIND_THREAD).unwrap();
-            }
+            core_affinity::set_for_current(id2);
 
             for id in 0..ITERATIONS {
             	thread::yield_now();
@@ -788,11 +725,11 @@ fn do_fs_create_del_inner(fsize_b: usize, overhead_ns: f64) -> Result<(), &'stat
 
 	let delta_create = end_create - start_create;
 	let delta_time_create = delta_create.as_nanos() as f64 - overhead_ns;
-	let files_per_time_create = (ITERATIONS * ITERATIONS) as f64 * SEC_TO_NANO / delta_time_create;
+	let files_per_time_create = (ITERATIONS) as f64 * SEC_TO_NANO / delta_time_create;
 
 	let delta_del = end_del - start_del;
 	let delta_time_del = delta_del.as_nanos() as f64 - overhead_ns;
-	let files_per_time_del = (ITERATIONS * ITERATIONS) as f64 * SEC_TO_NANO / delta_time_del;
+	let files_per_time_del = (ITERATIONS) as f64 * SEC_TO_NANO / delta_time_del;
 
 	printlninfo!("{:8}    {:9}    {:16.2}    {:16.2}", 
 		fsize_b/KB as usize, ITERATIONS, files_per_time_create, files_per_time_del);
