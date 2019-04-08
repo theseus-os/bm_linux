@@ -99,8 +99,8 @@ int context_main(){
 }
 
 void	*buf;
-size_t	size = 1024*1024;
-size_t chunk = 64*1024;
+size_t	g_size = 1024*1024;
+size_t g_chunk = 64*1024;
 
 long
 bread(void* buf, long nbytes)
@@ -148,13 +148,15 @@ bread(void* buf, long nbytes)
 void doit(int fd)
 {
 	int	sum = 0;
-
-	while (size >= 0) {
+	int size = g_size;
+	int chunk = g_chunk;
+	while (size > 0) {
 		if (size < chunk) chunk = size;
 		if (read(fd, buf, chunk) <= 0) {
+			printf("ERROR 2\n");
 			break;
 		}
-		bread(buf, chunk);
+		// bread(buf, chunk);
 		size -= chunk;
 	}
 }
@@ -163,7 +165,7 @@ float time_with_open_inner()
 {
 	char	*filename = "file1.txt";
 	int	fd;
-	char buf[128];
+	buf = (void *)valloc(g_chunk);
 	struct timespec ts_start, ts_end;
 	int iterations = ITERATIONS;
 	{
@@ -183,8 +185,8 @@ float time_with_open_inner()
 	clock_gettime(CLOCK_REALTIME, &ts_end);
 	long actual = timespec_diff(&ts_start, &ts_end);
 	float delta_time_avg = (actual*1.0)/(ITERATIONS);
-	float mb_per_sec = (size * 1.0 * 1000000000) / (1024*1024*1.0 * delta_time_avg);	// prefer this
-	float kb_per_sec = (size * 1.0 * 1000000000) / (1024*1.0 * delta_time_avg);
+	float mb_per_sec = (g_size * 1.0 * 1000000000) / (1024*1024*1.0 * delta_time_avg);	// prefer this
+	float kb_per_sec = (g_size * 1.0 * 1000000000) / (1024*1.0 * delta_time_avg);
 	printf("%ld %f %f %f \n", actual, delta_time_avg, mb_per_sec, kb_per_sec);
 	return(delta_time_avg); 
 }
