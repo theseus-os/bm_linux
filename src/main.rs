@@ -2,7 +2,7 @@
 extern crate libc;
 extern crate hwloc;
 extern crate core_affinity;
-
+extern crate perfcnt;
 
 use std::env;
 use std::fs::{self, File};
@@ -16,6 +16,10 @@ use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
 use hwloc::{Topology, ObjectType, CPUBIND_THREAD, CpuSet};
 use std::sync::{Arc,Mutex};
+
+use perfcnt::{PerfCounter, AbstractPerfCounter};
+use perfcnt::linux::HardwareEventType as Hardware;
+use perfcnt::linux::PerfCounterBuilderLinux as Builder;
 
 // const ITERATIONS: usize = 1_000_000;
 const ITERATIONS: usize = 1_000_0;
@@ -106,42 +110,44 @@ fn timing_overhead() -> f64 {
 
 fn getpid() -> u32 { process::id() }
 
-fn do_null_inner(overhead_ns: f64, th: usize, nr: usize) -> f64 {
-	let start;
-	let end;
+fn do_null_inner(th: usize, nr: usize, counter: &mut PerfCounter) -> f64 {
 	let mut pid = 0;
 
-	start = Instant::now();
+	counter.reset();
+	counter.start();
 	for _ in 0..ITERATIONS {
 		pid = getpid();
 	}
-	end = Instant::now();
+	counter.stop();
 
-	let delta = end - start;
-	let mut delta_time = delta.as_nanos() as f64;
-	if delta_time < overhead_ns {
-		printlnwarn!("Ignore overhead for null because overhead({:.2}) > diff({:.2})", 
-			overhead_ns, delta_time);
-	} else {
-		delta_time -= overhead_ns;
-	}
+	let delta_cycles = counter.read().expect("couldn't read counter");
 
-	let delta_time_avg = delta_time / ITERATIONS as f64;
+	let delta_cycles_avg = delta_cycles as f64/ ITERATIONS as f64;
 
-	printlninfo!("null_test_inner ({}/{}): {} total_ns -> {} avg_ns (ignore: {})", 
-		th, nr, delta_time, delta_time_avg, pid);
+	printlninfo!("null_test_inner ({}/{}): {} total_cycles -> {} avg_cycles (ignore: {})", 
+		th, nr, delta_cycles, delta_cycles_avg, pid);
 
-	delta_time_avg
+	delta_cycles_avg
 }
 
 fn do_null() {
 	let mut tries: f64 = 0.0;
 	let mut max: f64 = core::f64::MIN;
 	let mut min: f64 = core::f64::MAX;
-	let overhead = timing_overhead();
+	// let overhead = timing_overhead();
+
+	let core_ids = core_affinity::get_core_ids().unwrap();
+    let core_id = core_ids[2];
+	core_affinity::set_for_current(core_id);
+
+	let mut pmc: PerfCounter = Builder::from_hardware_event(Hardware::RefCPUCycles)
+		.on_cpu(core_id.id as isize)
+        .for_all_pids()
+        .finish()
+        .expect("Could not create counter");
 
 	for i in 0..TRIES {
-		let lat = do_null_inner(overhead, i+1, TRIES);
+		let lat = do_null_inner(i+1, TRIES, &mut pmc);
 
 		tries += lat;
 		if lat > max {max = lat;}
@@ -154,7 +160,7 @@ fn do_null() {
 		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
 	}
 
-	printlninfo!("NULL test: {:.2} ns", lat);
+	printlninfo!("NULL test: {:.2} cycles", lat);
 }
 
 fn do_spawn_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
