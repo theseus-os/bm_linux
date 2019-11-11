@@ -107,10 +107,51 @@ fn timing_overhead() -> f64 {
 	overhead
 }
 
+fn timing_overhead_inner_cycles(th: usize, nr: usize, counter: &mut PerfCounter) -> f64 {
+	counter.reset();
+	counter.start();
+
+	for _ in 0..ITERATIONS {
+		counter.read();
+	}
+
+	let delta_cycles = counter.read().expect("Couldn't read counter");
+	let delta_cycles_avg = delta_cycles as f64/ ITERATIONS as f64;
+
+	printlninfo!("t_overhead_inner ({}/{}): {:.2} total_cycles -> {:.2} avg_cycles", 
+		th, nr, delta_cycles, delta_cycles_avg);
+
+	delta_cycles_avg
+}
+
+fn timing_overhead_cycles(counter: &mut PerfCounter) -> f64 {
+	let mut tries: f64 = 0.0;
+	let mut max: f64 = core::f64::MIN;
+	let mut min: f64 = core::f64::MAX;
+
+	for i in 0..TRIES {
+		let overhead = timing_overhead_inner_cycles(i+1, TRIES, counter);
+		tries += overhead;
+		if overhead > max {max = overhead;}
+		if overhead < min {min = overhead;}
+	}
+
+	let overhead = tries / TRIES as f64;
+	let err = overhead * THRESHOLD_ERROR_RATIO;
+	if 	max - overhead > err || overhead - min > err {
+		printlnwarn!("timing_overhead diff is too big: {:.2} ({:.2} - {:.2}) ns", max-min, max, min);
+	}
+
+	printlninfo!("Timing overhead: {} cycles\n\n", overhead);
+
+	overhead
+}
+
 
 fn getpid() -> u32 { process::id() }
 
-fn do_null_inner(th: usize, nr: usize, counter: &mut PerfCounter) -> f64 {
+fn do_null_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter) -> f64 {
+	let end;
 	let mut pid = 0;
 
 	counter.reset();
@@ -118,13 +159,19 @@ fn do_null_inner(th: usize, nr: usize, counter: &mut PerfCounter) -> f64 {
 	for _ in 0..ITERATIONS {
 		pid = getpid();
 	}
-	counter.stop();
+	end = counter.read();
 
-	let delta_cycles = counter.read().expect("couldn't read counter");
+	let mut delta_cycles = end.expect("couldn't read counter") as f64;
+	if delta_cycles < overhead {
+		printlnwarn!("Ignore overhead for null because overhead({:.2}) > diff({:.2})", 
+			overhead, delta_cycles);
+	} else {
+		delta_cycles -= overhead;
+	}
 
-	let delta_cycles_avg = delta_cycles as f64/ ITERATIONS as f64;
+	let delta_cycles_avg = delta_cycles / ITERATIONS as f64;
 
-	printlninfo!("null_test_inner ({}/{}): {} total_cycles -> {} avg_cycles (ignore: {})", 
+	printlninfo!("null_test_inner ({}/{}): {:.2} total_cycles -> {:.2} avg_cycles (ignore: {})", 
 		th, nr, delta_cycles, delta_cycles_avg, pid);
 
 	delta_cycles_avg
@@ -134,7 +181,6 @@ fn do_null() {
 	let mut tries: f64 = 0.0;
 	let mut max: f64 = core::f64::MIN;
 	let mut min: f64 = core::f64::MAX;
-	// let overhead = timing_overhead();
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
     let core_id = core_ids[2];
@@ -146,8 +192,11 @@ fn do_null() {
         .finish()
         .expect("Could not create counter");
 
+	let overhead = timing_overhead_cycles(&mut pmc);
+
+	
 	for i in 0..TRIES {
-		let lat = do_null_inner(i+1, TRIES, &mut pmc);
+		let lat = do_null_inner(overhead, i+1, TRIES, &mut pmc);
 
 		tries += lat;
 		if lat > max {max = lat;}
