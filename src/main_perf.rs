@@ -159,10 +159,10 @@ fn do_null() {
 }
 
 fn do_spawn_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
-    let start;
-	let end;
+    // let start;
+	// let end;
 
-	start = Instant::now();
+	// start = Instant::now();
 	for _ in 0..ITERATIONS {
 		let mut child = Command::new("./hello")
 			.stdout(Stdio::null())
@@ -172,16 +172,16 @@ fn do_spawn_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'stati
 	    let exit_status = child.wait().expect("Cannot join child");
 	    exit_status.code();
 	}
-    end = Instant::now();
+    // end = Instant::now();
 
-    let delta = end - start;
-	let delta_time = delta.as_nanos() as f64 - overhead_ns;
-	let delta_time_avg = delta_time / ITERATIONS as f64;
+    // let delta = end - start;
+	// let delta_time = delta.as_nanos() as f64 - overhead_ns;
+	// let delta_time_avg = delta_time / ITERATIONS as f64;
 
-    printlninfo!("spawn_test_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
-		th, nr, delta_time, delta_time_avg);
+    // printlninfo!("spawn_test_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
+	// 	th, nr, delta_time, delta_time_avg);
 
-	Ok(delta_time_avg)
+	Ok(0.0)
 }
 
 // because Rust version is too slow, I double check with libc version.
@@ -221,31 +221,35 @@ fn do_spawn_inner_libc(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'
 }
 
 fn do_spawn(rust_only: bool) {
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+	// let mut tries: f64 = 0.0;
+	// let mut max: f64 = core::f64::MIN;
+	// let mut min: f64 = core::f64::MAX;
 
-	let overhead_ns = timing_overhead();
+	// let overhead_ns = timing_overhead();
+		let core_ids = core_affinity::get_core_ids().unwrap();
+    let core_id = core_ids[2];
+	core_affinity::set_for_current(core_id);
+
 	
 	for i in 0..TRIES {
 		let lat = if rust_only {
-			do_spawn_inner(overhead_ns, i+1, TRIES).expect("Error in spawn inner()")
+			do_spawn_inner(0.0, i+1, TRIES).expect("Error in spawn inner()")
 		} else {
-			do_spawn_inner_libc(overhead_ns, i+1, TRIES).expect("Error in spawn inner()")
+			do_spawn_inner_libc(0.0, i+1, TRIES).expect("Error in spawn inner()")
 		};
 
-		tries += lat;
-		if lat > max {max = lat;}
-		if lat < min {min = lat;}
+		// tries += lat;
+		// if lat > max {max = lat;}
+		// if lat < min {min = lat;}
 	}
 
-	let lat = tries / TRIES as f64;
-	let err = lat * THRESHOLD_ERROR_RATIO;
-	if 	max - lat > err || lat - min > err {
-		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
-	}
+	// let lat = tries / TRIES as f64;
+	// let err = lat * THRESHOLD_ERROR_RATIO;
+	// if 	max - lat > err || lat - min > err {
+	// 	printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
+	// }
 
-	printlninfo!("SPAWN result: {:.2} ns", lat);
+	// printlninfo!("SPAWN result: {:.2} ns", lat);
 }
 
 fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
@@ -402,9 +406,9 @@ fn do_ctx() {
 }
 
 fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
-    let start;
-    let intermediate;
-	let end;
+    // let start;
+    // let intermediate;
+	// let end;
 
 	let (tx1, rx1): (Sender<i32>, Receiver<i32>) = mpsc::channel();
     let (tx2, rx2): (Sender<i32>, Receiver<i32>) = mpsc::channel();
@@ -412,12 +416,12 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
     let (tx4, rx4): (Sender<i32>, Receiver<i32>) = mpsc::channel();
 
     let core_ids = core_affinity::get_core_ids().unwrap();
-    let id3 = core_ids[2];
+    let id3 = core_ids[0];
     let id4 = id3.clone();
     let id2 = id3.clone();
     let id1 = id3.clone();
 
-		start = Instant::now();
+		// start = Instant::now();
 
 
     		// Each thread will send its id via the channel
@@ -441,7 +445,7 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
 
         child4.join().expect("oops! the child thread panicked");
 
-    	intermediate = Instant::now();
+    	// intermediate = Instant::now();
 
     	// println!("Hello");
 
@@ -480,43 +484,47 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
     child1.join().expect("oops! the child thread panicked");
     child2.join().expect("oops! the child thread panicked");
 
-    end = Instant::now();
+    // end = Instant::now();
 
-    let overhead_delta = intermediate - start;
-    let overhead_time = overhead_delta.as_nanos() as f64;
-    let delta = end - intermediate - overhead_delta;
-	let delta_time = delta.as_nanos() as f64;
-	let delta_time_avg = delta_time / (ITERATIONS*2) as f64;
+    // let overhead_delta = intermediate - start;
+    // let overhead_time = overhead_delta.as_nanos() as f64;
+    // let delta = end - intermediate - overhead_delta;
+	// let delta_time = delta.as_nanos() as f64;
+	// let delta_time_avg = delta_time / (ITERATIONS*2) as f64;
 
-    printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
-		th, nr, overhead_time, delta_time, delta_time_avg);
+    // printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
+	// 	th, nr, overhead_time, delta_time, delta_time_avg);
 
-	Ok(delta_time_avg)
+	Ok(0.0)
 }
 
 
 fn do_ctx_yield() {
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+	// let mut tries: f64 = 0.0;
+	// let mut max: f64 = core::f64::MIN;
+	// let mut min: f64 = core::f64::MAX;
 
-	let overhead_ns = timing_overhead();
+	// let overhead_ns = timing_overhead();
+	let core_ids = core_affinity::get_core_ids().unwrap();
+    let core_id = core_ids[0];
+	core_affinity::set_for_current(core_id);
+
 	
 	for i in 0..TRIES {
-		let lat = do_ctx_yield_inner(overhead_ns, i+1, TRIES).expect("Error in spawn inner()");
+		let lat = do_ctx_yield_inner(0.0, i+1, TRIES).expect("Error in spawn inner()");
 
-		tries += lat;
-		if lat > max {max = lat;}
-		if lat < min {min = lat;}
+		// tries += lat;
+		// if lat > max {max = lat;}
+		// if lat < min {min = lat;}
 	}
 
-	let lat = tries / TRIES as f64;
-	let err = lat * THRESHOLD_ERROR_RATIO;
-	if 	max - lat > err || lat - min > err {
-		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
-	}
+	// let lat = tries / TRIES as f64;
+	// let err = lat * THRESHOLD_ERROR_RATIO;
+	// if 	max - lat > err || lat - min > err {
+	// 	printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
+	// }
 
-	printlninfo!("CTX result: {:.2} ns", lat);
+	// printlninfo!("CTX result: {:.2} ns", lat);
 }
 
 fn do_fs_read_with_open_inner(filename: &str, overhead_ns: f64, th: usize, nr: usize) -> Result<(f64, f64, f64), &'static str> {
@@ -801,5 +809,5 @@ fn main() {
     // 	_ => {printlninfo!("Unknown command: {}", env::args().nth(1).unwrap());}
     // }
 
-    do_null();
+    do_ctx_yield();
 }

@@ -1,3 +1,4 @@
+#![feature(asm)]
 #![feature(duration_as_u128)]
 extern crate libc;
 extern crate hwloc;
@@ -150,14 +151,26 @@ fn timing_overhead_cycles(counter: &mut PerfCounter) -> f64 {
 
 fn getpid() -> u32 { process::id() }
 
+static mut abc: u32 = 0;
+
+#[no_mangle]
+fn empty_fn(n: u32)
+{ 
+	unsafe{abc = abc + n};
+}
+
+
 fn do_null_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter) -> f64 {
 	let end;
 	let mut pid = 0;
+	let n = 39;
 
 	counter.reset();
 	counter.start();
 	for _ in 0..ITERATIONS {
 		pid = getpid();
+		// unsafe{asm!("syscall" : "={rax}"(pid) : "{rax}"(n) : "rcx", "r11", "memory" : "volatile")};
+
 	}
 	end = counter.read();
 
@@ -212,11 +225,13 @@ fn do_null() {
 	printlninfo!("NULL test: {:.2} cycles", lat);
 }
 
-fn do_spawn_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
-    let start;
+fn do_spawn_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter) -> Result<f64, &'static str> {
+    // let start;
 	let end;
 
-	start = Instant::now();
+	// start = Instant::now();
+	counter.reset();
+	counter.start();
 	for _ in 0..ITERATIONS {
 		let mut child = Command::new("./hello")
 			.stdout(Stdio::null())
@@ -226,24 +241,27 @@ fn do_spawn_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'stati
 	    let exit_status = child.wait().expect("Cannot join child");
 	    exit_status.code();
 	}
-    end = Instant::now();
+    // end = Instant::now();
+	end = counter.read();
 
-    let delta = end - start;
-	let delta_time = delta.as_nanos() as f64 - overhead_ns;
-	let delta_time_avg = delta_time / ITERATIONS as f64;
+    // let delta = end - start;
+	let delta_cycles = end.expect("couldn't read counter") as f64 - overhead;
+	let delta_cycles_avg = delta_cycles / ITERATIONS as f64;
 
-    printlninfo!("spawn_test_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
-		th, nr, delta_time, delta_time_avg);
+    printlninfo!("spawn_test_inner ({}/{}): : {:.2} total_cycles -> {:.2} avg_cycles", 
+		th, nr, delta_cycles, delta_cycles_avg);
 
-	Ok(delta_time_avg)
+	Ok(delta_cycles_avg)
 }
 
 // because Rust version is too slow, I double check with libc version.
-fn do_spawn_inner_libc(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
-    let start;
+fn do_spawn_inner_libc(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter) -> Result<f64, &'static str> {
+    // let start;
 	let end;
 
-	start = Instant::now();
+	// start = Instant::now();
+	counter.reset();
+	counter.start();
 	for _ in 0..ITERATIONS {
 		let pid = unsafe {libc::fork()};
 		match pid {
@@ -262,16 +280,17 @@ fn do_spawn_inner_libc(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'
 			}
 		}
 	}
-    end = Instant::now();
+    // end = Instant::now();
+	end = counter.read();
 
-    let delta = end - start;
-	let delta_time = delta.as_nanos() as f64 - overhead_ns;
-	let delta_time_avg = delta_time / ITERATIONS as f64;
+    // let delta = end - start;
+	let delta_cycles = end.expect("couldn't read counter") as f64 - overhead;
+	let delta_cycles_avg = delta_cycles / ITERATIONS as f64;
 
-    printlninfo!("spawn_test_inner (libc) ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
-		th, nr, delta_time, delta_time_avg);
+    printlninfo!("spawn_test_inner (libc) ({}/{}): : {:.2} total_cycles -> {:.2} avg_cycles", 
+		th, nr, delta_cycles, delta_cycles_avg);
 
-	Ok(delta_time_avg)
+	Ok(delta_cycles_avg)
 }
 
 fn do_spawn(rust_only: bool) {
@@ -279,13 +298,23 @@ fn do_spawn(rust_only: bool) {
 	let mut max: f64 = core::f64::MIN;
 	let mut min: f64 = core::f64::MAX;
 
-	let overhead_ns = timing_overhead();
+	let core_ids = core_affinity::get_core_ids().unwrap();
+    let core_id = core_ids[2];
+	core_affinity::set_for_current(core_id);
+
+	let mut pmc: PerfCounter = Builder::from_hardware_event(Hardware::RefCPUCycles)
+		.on_cpu(core_id.id as isize)
+        .for_all_pids()
+        .finish()
+        .expect("Could not create counter");
+
+	let overhead = timing_overhead_cycles(&mut pmc);
 	
 	for i in 0..TRIES {
 		let lat = if rust_only {
-			do_spawn_inner(overhead_ns, i+1, TRIES).expect("Error in spawn inner()")
+			do_spawn_inner(overhead, i+1, TRIES, &mut pmc).expect("Error in spawn inner()")
 		} else {
-			do_spawn_inner_libc(overhead_ns, i+1, TRIES).expect("Error in spawn inner()")
+			do_spawn_inner_libc(overhead, i+1, TRIES, &mut pmc).expect("Error in spawn inner()")
 		};
 
 		tries += lat;
@@ -299,7 +328,7 @@ fn do_spawn(rust_only: bool) {
 		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
 	}
 
-	printlninfo!("SPAWN result: {:.2} ns", lat);
+	printlninfo!("SPAWN result: {:.2} cycles", lat);
 }
 
 fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
@@ -311,8 +340,8 @@ fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
 }
 
 
-fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
-    let start;
+fn do_ctx_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter, core: core_affinity::CoreId) -> Result<f64, &'static str> {
+    // let start;
     let intermediate;
 	let end;
 
@@ -321,15 +350,16 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
     let (tx3, rx3): (Sender<i32>, Receiver<i32>) = mpsc::channel();
     let (tx4, rx4): (Sender<i32>, Receiver<i32>) = mpsc::channel();
 
-    // println!("Found {} cores.", num_cores);
-    let core_ids = core_affinity::get_core_ids().unwrap();
-    let id3 = core_ids[2];
+    // // println!("Found {} cores.", num_cores);
+    // let core_ids = core_affinity::get_core_ids().unwrap();
+    let id3 = core.clone();
     let id4 = id3.clone();
     let id2 = id3.clone();
     let id1 = id3.clone();
 
-		start = Instant::now();
-
+		// start = Instant::now();
+		counter.reset();
+		counter.start();
 
     		// Each thread will send its id via the channel
         let child3 = thread::spawn(move || {
@@ -371,7 +401,8 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
 
         child4.join().expect("oops! the child thread panicked");
 
-    	intermediate = Instant::now();
+    	// intermediate = Instant::now();
+		intermediate = counter.read();
 
     	// println!("Hello");
 
@@ -416,18 +447,19 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
     child1.join().expect("oops! the child thread panicked");
     child2.join().expect("oops! the child thread panicked");
 
-    end = Instant::now();
+    // end = Instant::now();
+	end = counter.read();
 
-    let overhead_delta = intermediate - start;
-    let overhead_time = overhead_delta.as_nanos() as f64;
-    let delta = end - intermediate - overhead_delta;
-	let delta_time = delta.as_nanos() as f64;
-	let delta_time_avg = delta_time / (ITERATIONS*2) as f64;
+    let overhead_delta = intermediate.expect("couldn't read counter") as f64;
+    let overhead_time = overhead_delta;
+    let delta = end.expect("couldn't read counter") as f64 - overhead_delta - overhead_delta;
+	let delta_cycles= delta;
+	let delta_cycles_avg = delta_cycles / (ITERATIONS*2) as f64;
 
-    printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
-		th, nr, overhead_time, delta_time, delta_time_avg);
+    printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_cycles -> {:.2} avg_cycles", 
+		th, nr, overhead_time, delta_cycles, delta_cycles_avg);
 
-	Ok(delta_time_avg)
+	Ok(delta_cycles_avg)
 }
 
 
@@ -436,10 +468,20 @@ fn do_ctx() {
 	let mut max: f64 = core::f64::MIN;
 	let mut min: f64 = core::f64::MAX;
 
-	let overhead_ns = timing_overhead();
+	let core_ids = core_affinity::get_core_ids().unwrap();
+    let core_id = core_ids[2];
+	core_affinity::set_for_current(core_id);
+
+	let mut pmc: PerfCounter = Builder::from_hardware_event(Hardware::RefCPUCycles)
+		.on_cpu(core_id.id as isize)
+        .for_all_pids()
+        .finish()
+        .expect("Could not create counter");
+
+	let overhead = timing_overhead_cycles(&mut pmc);
 	
 	for i in 0..TRIES {
-		let lat = do_ctx_inner(overhead_ns, i+1, TRIES).expect("Error in spawn inner()");
+		let lat = do_ctx_inner(overhead, i+1, TRIES, &mut pmc, core_id.clone()).expect("Error in spawn inner()");
 
 		tries += lat;
 		if lat > max {max = lat;}
@@ -452,11 +494,11 @@ fn do_ctx() {
 		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
 	}
 
-	printlninfo!("CTX result: {:.2} ns", lat);
+	printlninfo!("CTX result: {:.2} cycles", lat);
 }
 
-fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
-    let start;
+fn do_ctx_yield_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter, core_id: core_affinity::CoreId) -> Result<f64, &'static str> {
+    // let start;
     let intermediate;
 	let end;
 
@@ -465,13 +507,16 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
     let (tx3, rx3): (Sender<i32>, Receiver<i32>) = mpsc::channel();
     let (tx4, rx4): (Sender<i32>, Receiver<i32>) = mpsc::channel();
 
-    let core_ids = core_affinity::get_core_ids().unwrap();
-    let id3 = core_ids[2];
+    // let core_ids = core_affinity::get_core_ids().unwrap();
+    // let id3 = core_ids[3];
+    let id3 = core_id.clone();
     let id4 = id3.clone();
     let id2 = id3.clone();
     let id1 = id3.clone();
 
-		start = Instant::now();
+		// start = Instant::now();
+		counter.reset();
+		counter.start();
 
 
     		// Each thread will send its id via the channel
@@ -495,7 +540,9 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
 
         child4.join().expect("oops! the child thread panicked");
 
-    	intermediate = Instant::now();
+    	// intermediate = Instant::now();
+    	intermediate = counter.read();
+
 
     	// println!("Hello");
 
@@ -534,18 +581,19 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
     child1.join().expect("oops! the child thread panicked");
     child2.join().expect("oops! the child thread panicked");
 
-    end = Instant::now();
+    // end = Instant::now();
+	end = counter.read();
 
-    let overhead_delta = intermediate - start;
-    let overhead_time = overhead_delta.as_nanos() as f64;
-    let delta = end - intermediate - overhead_delta;
-	let delta_time = delta.as_nanos() as f64;
-	let delta_time_avg = delta_time / (ITERATIONS*2) as f64;
+	let overhead_delta = intermediate.expect("couldn't read counter") as f64;
+    let overhead_time = overhead_delta;
+    let delta = end.expect("couldn't read counter") as f64 - overhead_delta - overhead_delta;
+	let delta_cycles= delta;
+	let delta_cycles_avg = delta_cycles / (ITERATIONS*2) as f64;
 
-    printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
-		th, nr, overhead_time, delta_time, delta_time_avg);
+    printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_cycles -> {:.2} avg_cycles", 
+		th, nr, overhead_time, delta_cycles, delta_cycles_avg);
 
-	Ok(delta_time_avg)
+	Ok(delta_cycles_avg)
 }
 
 
@@ -554,10 +602,20 @@ fn do_ctx_yield() {
 	let mut max: f64 = core::f64::MIN;
 	let mut min: f64 = core::f64::MAX;
 
-	let overhead_ns = timing_overhead();
+	let core_ids = core_affinity::get_core_ids().unwrap();
+    let core_id = core_ids[2];
+	core_affinity::set_for_current(core_id);
+
+	let mut pmc: PerfCounter = Builder::from_hardware_event(Hardware::RefCPUCycles)
+		.on_cpu(core_id.id as isize)
+        .for_all_pids()
+        .finish()
+        .expect("Could not create counter");
+
+	let overhead = timing_overhead_cycles(&mut pmc);
 	
 	for i in 0..TRIES {
-		let lat = do_ctx_yield_inner(overhead_ns, i+1, TRIES).expect("Error in spawn inner()");
+		let lat = do_ctx_yield_inner(overhead, i+1, TRIES, &mut pmc, core_id).expect("Error in spawn inner()");
 
 		tries += lat;
 		if lat > max {max = lat;}
@@ -570,7 +628,7 @@ fn do_ctx_yield() {
 		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
 	}
 
-	printlninfo!("CTX result: {:.2} ns", lat);
+	printlninfo!("CTX result: {:.2} cycles", lat);
 }
 
 fn do_fs_read_with_open_inner(filename: &str, overhead_ns: f64, th: usize, nr: usize) -> Result<(f64, f64, f64), &'static str> {
