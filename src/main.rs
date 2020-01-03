@@ -22,130 +22,21 @@ use perfcnt::{PerfCounter, AbstractPerfCounter};
 use perfcnt::linux::HardwareEventType as Hardware;
 use perfcnt::linux::PerfCounterBuilderLinux as Builder;
 
-// const ITERATIONS: usize = 1_000_000;
-const ITERATIONS: usize = 1_000_0;
-const TRIES: usize = 10;
-const THRESHOLD_ERROR_RATIO: f64 = 0.1;
-const MB_IN_KB: usize = 1024;
-const MB: usize = 1024 * 1024;
-const KB: usize = 1024;
-const SEC_TO_NANO: f64 = 1_000_000_000.0;
+#[macro_use]
+mod timing;
+use timing::*;
 
-
-// const T_UNIT: &str = "nano sec";
-
-// don't change it.
-const READ_BUF_SIZE: usize = 64*1024;
-const WRITE_BUF_SIZE: usize = 1024*1024;
-const WRITE_BUF: [u8; WRITE_BUF_SIZE] = [65; WRITE_BUF_SIZE];
-
-macro_rules! printlninfo {
-    ($fmt:expr) => (println!(concat!("BM-INFO: ", $fmt)));
-    ($fmt:expr, $($arg:tt)*) => (println!(concat!("BM-INFO: ", $fmt), $($arg)*));
-}
-
-macro_rules! printlnwarn {
-    ($fmt:expr) => (println!(concat!("BM-WARN: ", $fmt)));
-    ($fmt:expr, $($arg:tt)*) => (println!(concat!("BM-WARN: ", $fmt), $($arg)*));
-}
-
+/// When we want to run the program with perf, disable this so all irrelevant timing code is excluded.
+const MEASURE_CYCLE_COUNTS: bool = true;
 
 fn print_usage(prog: &String) {
 	printlninfo!("\nUsage: {} cmd", prog);
 	printlninfo!("\n  availavle cmds:");
 	printlninfo!("\n    null             : null syscall");
+	printlninfo!("\n    ctx              : context switch");
 	printlninfo!("\n    spawn            : process creation");
-	printlninfo!("\n    fs_read_with_open: file read including open");
-	printlninfo!("\n    fs_read_only     : file read");
-	printlninfo!("\n    fs_create        : file create + del");
-}
-
-// overhead is TIME
-fn timing_overhead_inner(th: usize, nr: usize) -> f64 {
-	let mut temp;
-	let start;
-	let end;
-
-	temp = Instant::now();
-
-	start = Instant::now();
-	for _ in 0..ITERATIONS {
-		temp = Instant::now();
-	}
-	end = Instant::now();
-
-	let delta = end - start;
-	let delta_time = delta.as_nanos() as f64;
-	let delta_time_avg = delta_time / ITERATIONS as f64;
-
-	printlninfo!("t_overhead_inner ({}/{}): {} total -> {:.2} avg_ns (ignore: {})", 
-		th, nr, delta_time, delta_time_avg, temp.elapsed().as_nanos());
-
-	delta_time_avg
-}
-
-// overhead is TIME
-fn timing_overhead() -> f64 {
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
-
-	for i in 0..TRIES {
-		let overhead = timing_overhead_inner(i+1, TRIES);
-		tries += overhead;
-		if overhead > max {max = overhead;}
-		if overhead < min {min = overhead;}
-	}
-
-	let overhead = tries / TRIES as f64;
-	let err = overhead * THRESHOLD_ERROR_RATIO;
-	if 	max - overhead > err || overhead - min > err {
-		printlnwarn!("timing_overhead diff is too big: {:.2} ({:.2} - {:.2}) ns", max-min, max, min);
-	}
-
-	printlninfo!("Timing overhead: {} ns\n\n", overhead);
-
-	overhead
-}
-
-fn timing_overhead_inner_cycles(th: usize, nr: usize, counter: &mut PerfCounter) -> f64 {
-	counter.reset();
-	counter.start();
-
-	for _ in 0..ITERATIONS {
-		counter.read();
-	}
-
-	let delta_cycles = counter.read().expect("Couldn't read counter");
-	let delta_cycles_avg = delta_cycles as f64/ ITERATIONS as f64;
-
-	printlninfo!("t_overhead_inner ({}/{}): {:.2} total_cycles -> {:.2} avg_cycles", 
-		th, nr, delta_cycles, delta_cycles_avg);
-
-	delta_cycles_avg
-}
-
-fn timing_overhead_cycles(counter: &mut PerfCounter) -> f64 {
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
-
-	for i in 0..TRIES {
-		let overhead = timing_overhead_inner_cycles(i+1, TRIES, counter);
-		tries += overhead;
-		if overhead > max {max = overhead;}
-		if overhead < min {min = overhead;}
-	}
-
-	let overhead = tries / TRIES as f64;
-	let err = overhead * THRESHOLD_ERROR_RATIO;
-	if 	max - overhead > err || overhead - min > err {
-		printlnwarn!("timing_overhead diff is too big: {:.2} ({:.2} - {:.2}) ns", max-min, max, min);
-	}
-
-	printlninfo!("Timing overhead: {} cycles\n\n", overhead);
-
-	overhead
+	printlninfo!("\n    fault			 : page fault");
+	printlninfo!("\n    ipc 		     : ipc");
 }
 
 
@@ -159,55 +50,73 @@ fn empty_fn(n: u32)
 	unsafe{abc = abc + n};
 }
 
+fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
+    let cores = (*topology).objects_with_type(&ObjectType::Core).unwrap();
+    match cores.get(idx) {
+        Some(val) => val.cpuset().unwrap(),
+        None => panic!("No Core found with id {}", idx)
+    }
+}
 
-fn do_null_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter) -> f64 {
-	let end;
+
+fn do_null_inner(overhead: u64, th: usize, nr: usize, counter: &mut PerfCounter) -> u64 {
 	let mut pid = 0;
+	let mut delta_cycles_avg = 0;
+	let end;
 	let n = 39;
 
-	counter.reset();
-	counter.start();
+	if MEASURE_CYCLE_COUNTS {
+		counter.reset();
+		counter.start();
+	}
+
 	for _ in 0..ITERATIONS {
 		pid = getpid();
 		// unsafe{asm!("syscall" : "={rax}"(pid) : "{rax}"(n) : "rcx", "r11", "memory" : "volatile")};
 
 	}
-	end = counter.read();
 
-	let mut delta_cycles = end.expect("couldn't read counter") as f64;
-	if delta_cycles < overhead {
-		printlnwarn!("Ignore overhead for null because overhead({:.2}) > diff({:.2})", 
-			overhead, delta_cycles);
-	} else {
-		delta_cycles -= overhead;
+	if MEASURE_CYCLE_COUNTS {
+		end = counter.read();
+
+		let mut delta_cycles = end.expect("couldn't read counter");
+		if delta_cycles < overhead {
+			printlnwarn!("Ignore overhead for null because overhead({}) > diff({})", 
+				overhead, delta_cycles);
+		} else {
+			delta_cycles -= overhead;
+		}
+
+		delta_cycles_avg = delta_cycles / ITERATIONS as u64;
+
+		printlninfo!("null_test_inner ({}/{}): {} total_cycles -> {} avg_cycles (ignore: {})", 
+			th, nr, delta_cycles, delta_cycles_avg, pid);
 	}
-
-	let delta_cycles_avg = delta_cycles / ITERATIONS as f64;
-
-	printlninfo!("null_test_inner ({}/{}): {:.2} total_cycles -> {:.2} avg_cycles (ignore: {})", 
-		th, nr, delta_cycles, delta_cycles_avg, pid);
 
 	delta_cycles_avg
 }
 
 fn do_null() {
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
+	let mut overhead: u64 = 0;
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
-    let core_id = core_ids[2];
+	let core_id = core_ids[2];
 	core_affinity::set_for_current(core_id);
 
-	let mut pmc: PerfCounter = Builder::from_hardware_event(Hardware::RefCPUCycles)
+	let mut pmc = Builder::from_hardware_event(Hardware::RefCPUCycles)
 		.on_cpu(core_id.id as isize)
-        .for_all_pids()
-        .finish()
-        .expect("Could not create counter");
+		.for_all_pids()
+		.finish()
+		.expect("Could not create counter");
 
-	let overhead = timing_overhead_cycles(&mut pmc);
 
-	
+	if MEASURE_CYCLE_COUNTS {
+		overhead = timing_overhead_cycles(&mut pmc);
+	}
+
 	for i in 0..TRIES {
 		let lat = do_null_inner(overhead, i+1, TRIES, &mut pmc);
 
@@ -216,22 +125,27 @@ fn do_null() {
 		if lat < min {min = lat;}
 	}
 
-	let lat = tries / TRIES as f64;
-	let err = lat * THRESHOLD_ERROR_RATIO;
-	if max - lat > err || lat - min > err {
-		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
-	}
+	if MEASURE_CYCLE_COUNTS {
+		let lat = tries / TRIES as u64;
+		let err = (lat as f64 * THRESHOLD_ERROR_RATIO) as u64;
+		if max - lat > err || lat - min > err {
+			printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
+		}
 
-	printlninfo!("NULL test: {:.2} cycles", lat);
+		printlninfo!("NULL test: {} cycles", lat);
+	}
 }
 
-fn do_spawn_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter) -> Result<f64, &'static str> {
-    // let start;
+fn do_spawn_inner(overhead: u64, th: usize, nr: usize, counter: &mut PerfCounter) -> Result<u64, &'static str> {
 	let end;
+	let mut delta_cycles_avg = 0; 
 
-	// start = Instant::now();
-	counter.reset();
-	counter.start();
+
+	if MEASURE_CYCLE_COUNTS {
+		counter.reset();
+		counter.start();
+	}
+
 	for _ in 0..ITERATIONS {
 		let mut child = Command::new("./hello")
 			.stdout(Stdio::null())
@@ -241,27 +155,30 @@ fn do_spawn_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter
 	    let exit_status = child.wait().expect("Cannot join child");
 	    exit_status.code();
 	}
-    // end = Instant::now();
-	end = counter.read();
+    
+	if MEASURE_CYCLE_COUNTS {
+		end = counter.read();
 
-    // let delta = end - start;
-	let delta_cycles = end.expect("couldn't read counter") as f64 - overhead;
-	let delta_cycles_avg = delta_cycles / ITERATIONS as f64;
+		let delta_cycles = end.expect("couldn't read counter") - overhead;
+		delta_cycles_avg = delta_cycles / ITERATIONS as u64;
 
-    printlninfo!("spawn_test_inner ({}/{}): : {:.2} total_cycles -> {:.2} avg_cycles", 
-		th, nr, delta_cycles, delta_cycles_avg);
+		printlninfo!("spawn_test_inner ({}/{}): : {} total_cycles -> {} avg_cycles", 
+			th, nr, delta_cycles, delta_cycles_avg);
+	}
 
 	Ok(delta_cycles_avg)
 }
 
 // because Rust version is too slow, I double check with libc version.
-fn do_spawn_inner_libc(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter) -> Result<f64, &'static str> {
-    // let start;
+fn do_spawn_inner_libc(overhead: u64, th: usize, nr: usize, counter: &mut PerfCounter) -> Result<u64, &'static str> {
 	let end;
+	let mut delta_cycles_avg = 0; 
 
-	// start = Instant::now();
-	counter.reset();
-	counter.start();
+	if MEASURE_CYCLE_COUNTS {
+		counter.reset();
+		counter.start();
+	}
+
 	for _ in 0..ITERATIONS {
 		let pid = unsafe {libc::fork()};
 		match pid {
@@ -280,36 +197,41 @@ fn do_spawn_inner_libc(overhead: f64, th: usize, nr: usize, counter: &mut PerfCo
 			}
 		}
 	}
-    // end = Instant::now();
-	end = counter.read();
+    
+	if MEASURE_CYCLE_COUNTS {
+		end = counter.read();
 
-    // let delta = end - start;
-	let delta_cycles = end.expect("couldn't read counter") as f64 - overhead;
-	let delta_cycles_avg = delta_cycles / ITERATIONS as f64;
+		let delta_cycles = end.expect("couldn't read counter") - overhead;
+		let delta_cycles_avg = delta_cycles / ITERATIONS as u64;
 
-    printlninfo!("spawn_test_inner (libc) ({}/{}): : {:.2} total_cycles -> {:.2} avg_cycles", 
-		th, nr, delta_cycles, delta_cycles_avg);
+		printlninfo!("spawn_test_inner (libc) ({}/{}): : {} total_cycles -> {} avg_cycles", 
+			th, nr, delta_cycles, delta_cycles_avg);
+	}
 
 	Ok(delta_cycles_avg)
 }
 
 fn do_spawn(rust_only: bool) {
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
+	let mut overhead: u64 = 0;
+
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
-    let core_id = core_ids[2];
+	let core_id = core_ids[2];
 	core_affinity::set_for_current(core_id);
 
-	let mut pmc: PerfCounter = Builder::from_hardware_event(Hardware::RefCPUCycles)
+	let mut pmc = Builder::from_hardware_event(Hardware::RefCPUCycles)
 		.on_cpu(core_id.id as isize)
-        .for_all_pids()
-        .finish()
-        .expect("Could not create counter");
+		.for_all_pids()
+		.finish()
+		.expect("Could not create counter");
 
-	let overhead = timing_overhead_cycles(&mut pmc);
-	
+	if MEASURE_CYCLE_COUNTS {
+		overhead = timing_overhead_cycles(&mut pmc);
+	}
+
 	for i in 0..TRIES {
 		let lat = if rust_only {
 			do_spawn_inner(overhead, i+1, TRIES, &mut pmc).expect("Error in spawn inner()")
@@ -322,28 +244,21 @@ fn do_spawn(rust_only: bool) {
 		if lat < min {min = lat;}
 	}
 
-	let lat = tries / TRIES as f64;
-	let err = lat * THRESHOLD_ERROR_RATIO;
-	if 	max - lat > err || lat - min > err {
-		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
+	if MEASURE_CYCLE_COUNTS {
+		let lat = tries / TRIES as u64;
+		let err = (lat as f64 * THRESHOLD_ERROR_RATIO) as u64;
+		if 	max - lat > err || lat - min > err {
+			printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
+		}
+
+		printlninfo!("SPAWN result: {} cycles", lat);
 	}
-
-	printlninfo!("SPAWN result: {:.2} cycles", lat);
 }
 
-fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
-    let cores = (*topology).objects_with_type(&ObjectType::Core).unwrap();
-    match cores.get(idx) {
-        Some(val) => val.cpuset().unwrap(),
-        None => panic!("No Core found with id {}", idx)
-    }
-}
-
-
-fn do_ctx_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter, core: core_affinity::CoreId) -> Result<f64, &'static str> {
-    // let start;
-    let intermediate;
+fn do_ctx_inner(overhead: u64, th: usize, nr: usize, counter: &mut PerfCounter, core: core_affinity::CoreId) -> Result<u64, &'static str> {
+    let mut intermediate = Ok(0);
 	let end;
+	let mut delta_cycles_avg = 0;
 
 	let (tx1, rx1): (Sender<i32>, Receiver<i32>) = mpsc::channel();
     let (tx2, rx2): (Sender<i32>, Receiver<i32>) = mpsc::channel();
@@ -357,9 +272,10 @@ fn do_ctx_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter, 
     let id2 = id3.clone();
     let id1 = id3.clone();
 
-		// start = Instant::now();
+	if MEASURE_CYCLE_COUNTS{
 		counter.reset();
 		counter.start();
+	}
 
     		// Each thread will send its id via the channel
         let child3 = thread::spawn(move || {
@@ -401,11 +317,9 @@ fn do_ctx_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter, 
 
         child4.join().expect("oops! the child thread panicked");
 
-    	// intermediate = Instant::now();
-		intermediate = counter.read();
-
-    	// println!("Hello");
-
+		if MEASURE_CYCLE_COUNTS {
+			intermediate = counter.read();
+		}
 
         // Each thread will send its id via the channel
         let child1 = thread::spawn(move || {
@@ -447,26 +361,28 @@ fn do_ctx_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter, 
     child1.join().expect("oops! the child thread panicked");
     child2.join().expect("oops! the child thread panicked");
 
-    // end = Instant::now();
-	end = counter.read();
+	if MEASURE_CYCLE_COUNTS {
+		end = counter.read();
 
-    let overhead_delta = intermediate.expect("couldn't read counter") as f64;
-    let overhead_time = overhead_delta;
-    let delta = end.expect("couldn't read counter") as f64 - overhead_delta - overhead_delta;
-	let delta_cycles= delta;
-	let delta_cycles_avg = delta_cycles / (ITERATIONS*2) as f64;
+		let overhead_delta = intermediate.expect("couldn't read counter");
+		let overhead_time = overhead_delta;
+		let delta = end.expect("couldn't read counter") as u64 - overhead_delta - overhead_delta;
+		let delta_cycles= delta;
+		delta_cycles_avg = delta_cycles / (ITERATIONS*2) as u64;
 
-    printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_cycles -> {:.2} avg_cycles", 
-		th, nr, overhead_time, delta_cycles, delta_cycles_avg);
+		printlninfo!("do_ctx_inner ({}/{}): : overhead {}, {} total_cycles -> {} avg_cycles", 
+			th, nr, overhead_time, delta_cycles, delta_cycles_avg);
+	}
 
 	Ok(delta_cycles_avg)
 }
 
 
 fn do_ctx() {
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
+	let mut overhead = 0;
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
     let core_id = core_ids[2];
@@ -478,8 +394,10 @@ fn do_ctx() {
         .finish()
         .expect("Could not create counter");
 
-	let overhead = timing_overhead_cycles(&mut pmc);
-	
+	if MEASURE_CYCLE_COUNTS {
+		overhead = timing_overhead_cycles(&mut pmc);
+	}
+
 	for i in 0..TRIES {
 		let lat = do_ctx_inner(overhead, i+1, TRIES, &mut pmc, core_id.clone()).expect("Error in spawn inner()");
 
@@ -488,19 +406,21 @@ fn do_ctx() {
 		if lat < min {min = lat;}
 	}
 
-	let lat = tries / TRIES as f64;
-	let err = lat * THRESHOLD_ERROR_RATIO;
-	if 	max - lat > err || lat - min > err {
-		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
-	}
+	if MEASURE_CYCLE_COUNTS {
+		let lat = tries / TRIES as u64;
+		let err = (lat as f64 * THRESHOLD_ERROR_RATIO) as u64;
+		if 	max - lat > err || lat - min > err {
+			printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
+		}
 
-	printlninfo!("CTX result: {:.2} cycles", lat);
+		printlninfo!("CTX result: {} cycles", lat);
+	}
 }
 
-fn do_ctx_yield_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCounter, core_id: core_affinity::CoreId) -> Result<f64, &'static str> {
-    // let start;
-    let intermediate;
+fn do_ctx_yield_inner(overhead: u64, th: usize, nr: usize, counter: &mut PerfCounter, core_id: core_affinity::CoreId) -> Result<u64, &'static str> {
+	let mut intermediate = Ok(0);
 	let end;
+	let mut delta_cycles_avg = 0;
 
 	let (tx1, rx1): (Sender<i32>, Receiver<i32>) = mpsc::channel();
     let (tx2, rx2): (Sender<i32>, Receiver<i32>) = mpsc::channel();
@@ -514,13 +434,14 @@ fn do_ctx_yield_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCou
     let id2 = id3.clone();
     let id1 = id3.clone();
 
-		// start = Instant::now();
+	if MEASURE_CYCLE_COUNTS {
 		counter.reset();
 		counter.start();
+	}
 
-
-    		// Each thread will send its id via the channel
-        let child3 = thread::spawn(move || {
+    	// Each thread will send its id via the channel
+        
+		let child3 = thread::spawn(move || {
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
 
@@ -540,12 +461,9 @@ fn do_ctx_yield_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCou
 
         child4.join().expect("oops! the child thread panicked");
 
-    	// intermediate = Instant::now();
-    	intermediate = counter.read();
-
-
-    	// println!("Hello");
-
+		if MEASURE_CYCLE_COUNTS {
+    		intermediate = counter.read();
+		}
 
         // Each thread will send its id via the channel
         let child1 = thread::spawn(move || {
@@ -581,26 +499,27 @@ fn do_ctx_yield_inner(overhead: f64, th: usize, nr: usize, counter: &mut PerfCou
     child1.join().expect("oops! the child thread panicked");
     child2.join().expect("oops! the child thread panicked");
 
-    // end = Instant::now();
-	end = counter.read();
+    if MEASURE_CYCLE_COUNTS {
+		end = counter.read();
 
-	let overhead_delta = intermediate.expect("couldn't read counter") as f64;
-    let overhead_time = overhead_delta;
-    let delta = end.expect("couldn't read counter") as f64 - overhead_delta - overhead_delta;
-	let delta_cycles= delta;
-	let delta_cycles_avg = delta_cycles / (ITERATIONS*2) as f64;
+		let overhead_delta = intermediate.expect("couldn't read counter");
+		let overhead_time = overhead_delta;
+		let delta = end.expect("couldn't read counter") - overhead_delta - overhead_delta;
+		let delta_cycles= delta;
+		delta_cycles_avg = delta_cycles / (ITERATIONS*2) as u64;
 
-    printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_cycles -> {:.2} avg_cycles", 
-		th, nr, overhead_time, delta_cycles, delta_cycles_avg);
+		printlninfo!("do_ctx_inner ({}/{}): : overhead {}, {} total_cycles -> {} avg_cycles", 
+			th, nr, overhead_time, delta_cycles, delta_cycles_avg);
+	}
 
 	Ok(delta_cycles_avg)
 }
 
 
 fn do_ctx_yield() {
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
     let core_id = core_ids[2];
@@ -622,245 +541,104 @@ fn do_ctx_yield() {
 		if lat < min {min = lat;}
 	}
 
-	let lat = tries / TRIES as f64;
-	let err = lat * THRESHOLD_ERROR_RATIO;
+	let lat = tries / TRIES as u64;
+	let err = (lat as f64* THRESHOLD_ERROR_RATIO) as u64;
 	if 	max - lat > err || lat - min > err {
-		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
+		printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
 	}
 
-	printlninfo!("CTX result: {:.2} cycles", lat);
+	printlninfo!("CTX result: {} cycles", lat);
 }
 
-fn do_fs_read_with_open_inner(filename: &str, overhead_ns: f64, th: usize, nr: usize) -> Result<(f64, f64, f64), &'static str> {
-	let start;
-	let end;
-	let mut dummy_sum: u64 = 0;
-	let mut buf = vec![0; READ_BUF_SIZE];
-	let size = fs::metadata(filename).expect("Cannot stat the file").len() as i64;
-	let mut unread_size = size;
+fn do_page_fault_inner(overhead: u64, th: usize, nr: usize, counter: &mut PerfCounter) -> u64 {
+	let mut byte = 237;
+	let mut delta_cycles_avg = 0;
+	let end: u64;
+	let n = 39;
 
-	if unread_size % READ_BUF_SIZE as i64 != 0 {
-		return Err("File size is not alligned");
+	let len: libc::size_t = 4096;
+	let prot: libc::c_int = libc::PROT_WRITE;
+	let flags: libc::c_int = libc::MAP_ANONYMOUS;
+	let fd: libc::c_int = -1;
+	let offset: libc::off_t = 0;
+
+	if MEASURE_CYCLE_COUNTS {
+		counter.reset();
+		counter.start();
 	}
 
-	start = Instant::now();
-	for _ in 0..ITERATIONS 	{
-		let mut file = File::open(filename).expect("Cannot stat the file");
-		unread_size = size;
-    	while unread_size > 0 {	// now read()
-        	file.read_exact(&mut buf).expect("Cannot read");
-			unread_size -= READ_BUF_SIZE as i64;
+	for _ in 0..ITERATIONS {
+		let mut addr: *mut u8 = 0 as *mut u8;
 
-			// LMbench based on C does the magic to cast a type from char to int
-			// But, we dont' have the luxury with type-safe Rust, so we do...
-			dummy_sum += buf.iter().fold(0 as u64, |acc, &x| acc + x as u64);
-    	}
-	}
-	end = Instant::now();
-
-	let delta = end - start;
-	let delta_time = delta.as_nanos() as f64 - overhead_ns;
-	let delta_time_avg = delta_time / ITERATIONS as f64;
-	// let mb_per_sec = size as f64 / MB as f64 / (delta_time_avg / SEC_TO_NANO);
-	let mb_per_sec = (size as f64 * SEC_TO_NANO) / (MB as f64 * delta_time_avg);	// prefer this
-	let kb_per_sec = (size as f64 * SEC_TO_NANO) / (KB as f64 * delta_time_avg);
-
-	printlninfo!("read_with_open_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns || {:.3} MB/sec {:.3} KB/sec (ignore: {})",
-		th, nr, delta_time, delta_time_avg, mb_per_sec, kb_per_sec, dummy_sum);
-
-	Ok((delta_time_avg, mb_per_sec, kb_per_sec))
-}
-
-// return: (time, MB/sec)
-fn do_fs_read_only_inner(filename: &str, overhead_ns: f64, th: usize, nr: usize) -> Result<(f64, f64, f64), &'static str> {
-	let start;
-	let end;
-	let mut dummy_sum: u64 = 0;
-	let mut buf = vec![0 as u8; READ_BUF_SIZE];
-	let size = fs::metadata(filename).expect("Cannot stat the file").len() as i64;
-	let mut unread_size = size;
-
-	if unread_size % READ_BUF_SIZE as i64 != 0 {
-		return Err("File size is not alligned");
+		unsafe{ 
+			libc::mmap(addr as *mut libc::c_void, len, prot, flags, fd, offset); 
+			println!("addr: {}", *addr);
+			*addr = byte;
+			libc::munmap(addr as *mut libc::c_void, len);
+		}
 	}
 
-	let mut file = File::open(filename).expect("Cannot stat the file");
+	// if MEASURE_CYCLE_COUNTS {
+	// 	end = counter.read();
 
-	start = Instant::now();
-	for _ in 0..ITERATIONS 	{
-		file.seek(SeekFrom::Start(0)).expect("Cannot seek");
-		unread_size = size;
-    	while unread_size > 0 {	// now read()
-        	file.read_exact(&mut buf).expect("Cannot read");
-			unread_size -= READ_BUF_SIZE as i64;
-			
-			// LMbench based on C does the magic to cast a type from char to int
-			// But, we dont' have the luxury with type-safe Rust, so we do...
-			dummy_sum += buf.iter().fold(0 as u64, |acc, &x| acc + x as u64);	
-    	}
-	}	// for
-	end = Instant::now();
+	// 	let mut delta_cycles = end.expect("couldn't read counter");
+	// 	if delta_cycles < overhead {
+	// 		printlnwarn!("Ignore overhead for null because overhead({}) > diff({})", 
+	// 			overhead, delta_cycles);
+	// 	} else {
+	// 		delta_cycles -= overhead;
+	// 	}
 
-	let delta = end - start;
-	let delta_time = delta.as_nanos() as f64 - overhead_ns;
-	let delta_time_avg = delta_time / ITERATIONS as f64;
-	// let naive_mb_per_sec = (size as f64 / MB as f64) / (delta_time_avg / SEC_TO_NANO);
-	let mb_per_sec = (size as f64 * SEC_TO_NANO) / (MB as f64 * delta_time_avg);	// prefer this
-	let kb_per_sec = (size as f64 * SEC_TO_NANO) / (KB as f64 * delta_time_avg);
+	// 	delta_cycles_avg = delta_cycles / ITERATIONS as u64;
 
-	printlninfo!("read_only_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns || {:.3} MB/sec {:.3} KB/sec (ignore: {}) ",
-		th, nr, delta_time, delta_time_avg, mb_per_sec, kb_per_sec, dummy_sum);
-
-	Ok((delta_time_avg, mb_per_sec, kb_per_sec))
-}
-
-fn mk_tmp_file(filename: &str, sz: usize) -> Result<(), &'static str> {
-	if sz > WRITE_BUF_SIZE {
-		return Err("Cannot test because the file size is too big");
-	}
-
-	let mut file = File::create(filename).expect("Cannot create the file");
-
-	// let mut output = String::new();
-	// for i in 0..sz-1 {
-	// 	output.push((i as u8 % 10 + 48) as char);
+	// 	printlninfo!("null_test_inner ({}/{}): {} total_cycles -> {} avg_cycles (ignore: {})", 
+	// 		th, nr, delta_cycles, delta_cycles_avg, pid);
 	// }
-	// output.push('!'); // my magic char for the last byte
 
-	// file.write_all(output.as_bytes()).expect("File cannot be created.");
-	file.write_all(&WRITE_BUF[0..sz]).expect("File cannot be created.");
-	// printlninfo!("{} is created.", filename);
-	Ok(())
+	delta_cycles_avg
 }
 
-fn do_fs_read_with_size(overhead_ns: f64, fsize_kb: usize, with_open: bool) {
-	let mut tries: f64 = 0.0;
-	let mut tries_mb: f64 = 0.0;
-	let mut tries_kb: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+fn do_page_fault() {
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
+	let mut overhead: u64 = 0;
 
-	let filename = format!("./tmp_{}k.txt", fsize_kb);
-	// printlninfo!("Creating {} KB or {} B", fsize_kb, fsize_kb*1024);
-	mk_tmp_file(&filename, fsize_kb*1024).expect("Cannot create a file");
+	let core_ids = core_affinity::get_core_ids().unwrap();
+	let core_id = core_ids[2];
+	core_affinity::set_for_current(core_id);
+
+	let mut pmc = Builder::from_hardware_event(Hardware::RefCPUCycles)
+		.on_cpu(core_id.id as isize)
+		.for_all_pids()
+		.finish()
+		.expect("Could not create counter");
+
+
+	if MEASURE_CYCLE_COUNTS {
+		overhead = timing_overhead_cycles(&mut pmc);
+	}
 
 	for i in 0..TRIES {
-		let (lat, tput_mb, tput_kb) = if with_open {
-			do_fs_read_with_open_inner(&filename, overhead_ns, i+1, TRIES).expect("Error in read_open inner()")
-		} else {
-			do_fs_read_only_inner(&filename, overhead_ns, i+1, TRIES).expect("Error in read_only inner()")
-		};
+		let lat = do_page_fault_inner(overhead, i+1, TRIES, &mut pmc);
 
 		tries += lat;
-		tries_mb += tput_mb;
-		tries_kb += tput_kb;
 		if lat > max {max = lat;}
 		if lat < min {min = lat;}
 	}
 
-	let lat = tries / TRIES as f64;
-	let tput_mb = tries_mb / TRIES as f64;
-	let tput_kb = tries_kb / TRIES as f64;
-	let err = lat * THRESHOLD_ERROR_RATIO;
-	if 	max - lat > err || lat - min > err {
-		printlnwarn!("test diff is too big: {} ({} - {}) ns", max-min, max, min);
-	}
+	if MEASURE_CYCLE_COUNTS {
+		let lat = tries / TRIES as u64;
+		let err = (lat as f64 * THRESHOLD_ERROR_RATIO) as u64;
+		if max - lat > err || lat - min > err {
+			printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
+		}
 
-	// printlninfo!("{} for {} KB: {} ns", if with_open {"READ WITH OPEN"} else {"READ ONLY"}, fsize_kb, lat);
-	printlninfo!("{} for {} KB: {} ns, {} MB/sec, {} KB/sec", 
-		if with_open {"READ WITH OPEN"} else {"READ ONLY"}, 
-		fsize_kb, lat, tput_mb, tput_kb);
-}
-
-fn do_fs_read(with_open: bool) {
-	printlninfo!("File size     : {:4} KB", MB_IN_KB);
-	printlninfo!("Read buf size : {:4} KB", READ_BUF_SIZE / 1024);
-	printlninfo!("========================================");
-
-	let overhead_ns = timing_overhead();
-
-	do_fs_read_with_size(overhead_ns, MB_IN_KB, with_open);
-}
-
-fn del_or_err(filename: &str) -> Result<(), &'static str> {
-	let path = Path::new(filename);
-	if path.exists() {
-		fs::remove_file(path);
-	}
-
-	Ok(())
-}
-
-fn do_fs_create_del_inner(fsize_b: usize, overhead_ns: f64) -> Result<(), &'static str> {
-	let mut filenames = vec!["".to_string(); ITERATIONS];
-	let pid = getpid();
-	let start_create;
-	let end_create;
-	let start_del;
-	let end_del;
-
-
-	// populate filenames
-	for i in 0..ITERATIONS {
-		filenames[i] = format!("tmp_{}_{}_{}.txt", pid, fsize_b, i);
-	}
-
-	// check if we have enough data to write. We use just const data to avoid unnecessary overhead
-	if fsize_b > WRITE_BUF_SIZE {
-		// don't put this into mk_tmp_file() or the loop below
-		// mk_tmp_file() and the loop below must be minimal for create/del benchmark
-		return Err("Cannot test because the file size is too big");
-	}
-
-	// delete existing files. To make sure that the file creation below succeeds.
-	for filename in &filenames {
-		del_or_err(filename).expect("Cannot continue the test. We need 'delete()'.");
-	}
-
-	// create
-	start_create = Instant::now();
-	for filename in &filenames {
-		// checking if filename exists is done above
-		// here, we only create files
-
-		// we don't use mk_tmp_file() intentionally.
-		File::create(filename).expect("Cannot create the file")
-			.write_all(&WRITE_BUF[0..fsize_b]).expect("File cannot be created.");
-	}
-	end_create = Instant::now();
-
-	// delete
-	start_del = Instant::now();
-	for filename in filenames {
-		fs::remove_file(filename);
-	}
-	end_del = Instant::now();
-
-	let delta_create = end_create - start_create;
-	let delta_time_create = delta_create.as_nanos() as f64 - overhead_ns;
-	let files_per_time_create = (ITERATIONS) as f64 * SEC_TO_NANO / delta_time_create;
-
-	let delta_del = end_del - start_del;
-	let delta_time_del = delta_del.as_nanos() as f64 - overhead_ns;
-	let files_per_time_del = (ITERATIONS) as f64 * SEC_TO_NANO / delta_time_del;
-
-	printlninfo!("{:8}    {:9}    {:16.2}    {:16.2}", 
-		fsize_b/KB as usize, ITERATIONS, files_per_time_create, files_per_time_del);
-	Ok(())
-}
-
-fn do_fs_create_del() {
-	// let	fsizes_b = [0 as usize, 1024, 4096, 10*1024];	// Theseus thinks creating an empty file is stupid (for memfs)
-	let	fsizes_b = [1024_usize, 4096, 10*1024];
-
-	let overhead_ns = timing_overhead();
-
-	printlninfo!("SIZE(KB)    Iteration    created(files/s)    deleted(files/s)");
-	// printlninfo!("SIZE(KB)    Iteration    created(files/s)");
-	for fsize_b in fsizes_b.iter() {
-		do_fs_create_del_inner(*fsize_b, overhead_ns).expect("Cannot test File Create & Del");
+		printlninfo!("PAGE FAULT test: {} cycles", lat);
 	}
 }
+
+fn do_ipc() {}
 
 fn print_header() {
 	printlninfo!("========================================");
@@ -892,14 +670,8 @@ fn main() {
     	"spawn" => {
     		do_spawn(true /*rust only*/);
     	}
-    	"fs_read_with_open" | "fs1" => {
-    		do_fs_read(true /*with_open*/);
-    	}
-    	"fs_read_only" | "fs2" => {
-    		do_fs_read(false /*with_open*/);
-    	}
-    	"fs_create" | "fs3" => {
-    		do_fs_create_del();
+		"exec" => {
+    		do_spawn(false /*rust only*/);
     	}
     	"ctx" => {
     		do_ctx();
@@ -907,9 +679,13 @@ fn main() {
     	"ctx_yield" => {
     		do_ctx_yield();
     	}
-    	"exec" => {
-    		do_spawn(false /*rust only*/);
+		"fault" => {
+    		do_page_fault();
     	}
+		"ipc" => {
+    		do_ipc();
+    	}
+
     	_ => {printlninfo!("Unknown command: {}", env::args().nth(1).unwrap());}
     }
 }
