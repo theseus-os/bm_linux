@@ -4,6 +4,9 @@ extern crate libc;
 extern crate hwloc;
 extern crate core_affinity;
 extern crate perfcnt;
+extern crate memmap;
+extern crate libm;
+extern crate os_pipe;
 
 use std::env;
 use std::fs::{self, File};
@@ -21,6 +24,10 @@ use std::sync::{Arc,Mutex};
 use perfcnt::{PerfCounter, AbstractPerfCounter};
 use perfcnt::linux::HardwareEventType as Hardware;
 use perfcnt::linux::PerfCounterBuilderLinux as Builder;
+
+use memmap::MmapOptions;
+
+use os_pipe::pipe;
 
 #[macro_use]
 mod timing;
@@ -101,6 +108,7 @@ fn do_null() {
 	let mut max: u64 = core::u64::MIN;
 	let mut min: u64 = core::u64::MAX;
 	let mut overhead: u64 = 0;
+	let mut vec = Vec::new();
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
 	let core_id = core_ids[2];
@@ -119,6 +127,7 @@ fn do_null() {
 
 	for i in 0..TRIES {
 		let lat = do_null_inner(overhead, i+1, TRIES, &mut pmc);
+		vec.push(lat);
 
 		tries += lat;
 		if lat > max {max = lat;}
@@ -126,6 +135,7 @@ fn do_null() {
 	}
 
 	if MEASURE_CYCLE_COUNTS {
+		print_stats(vec);
 		let lat = tries / TRIES as u64;
 		let err = (lat as f64 * THRESHOLD_ERROR_RATIO) as u64;
 		if max - lat > err || lat - min > err {
@@ -216,7 +226,7 @@ fn do_spawn(rust_only: bool) {
 	let mut max: u64 = core::u64::MIN;
 	let mut min: u64 = core::u64::MAX;
 	let mut overhead: u64 = 0;
-
+	let mut vec = Vec::new();
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
 	let core_id = core_ids[2];
@@ -238,6 +248,7 @@ fn do_spawn(rust_only: bool) {
 		} else {
 			do_spawn_inner_libc(overhead, i+1, TRIES, &mut pmc).expect("Error in spawn inner()")
 		};
+		vec.push(lat);
 
 		tries += lat;
 		if lat > max {max = lat;}
@@ -245,6 +256,7 @@ fn do_spawn(rust_only: bool) {
 	}
 
 	if MEASURE_CYCLE_COUNTS {
+		print_stats(vec);
 		let lat = tries / TRIES as u64;
 		let err = (lat as f64 * THRESHOLD_ERROR_RATIO) as u64;
 		if 	max - lat > err || lat - min > err {
@@ -383,6 +395,7 @@ fn do_ctx() {
 	let mut max: u64 = core::u64::MIN;
 	let mut min: u64 = core::u64::MAX;
 	let mut overhead = 0;
+	let mut vec = Vec::new();
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
     let core_id = core_ids[2];
@@ -400,6 +413,7 @@ fn do_ctx() {
 
 	for i in 0..TRIES {
 		let lat = do_ctx_inner(overhead, i+1, TRIES, &mut pmc, core_id.clone()).expect("Error in spawn inner()");
+		vec.push(lat);
 
 		tries += lat;
 		if lat > max {max = lat;}
@@ -407,6 +421,7 @@ fn do_ctx() {
 	}
 
 	if MEASURE_CYCLE_COUNTS {
+		print_stats(vec);
 		let lat = tries / TRIES as u64;
 		let err = (lat as f64 * THRESHOLD_ERROR_RATIO) as u64;
 		if 	max - lat > err || lat - min > err {
@@ -520,6 +535,7 @@ fn do_ctx_yield() {
 	let mut tries: u64 = 0;
 	let mut max: u64 = core::u64::MIN;
 	let mut min: u64 = core::u64::MAX;
+	let mut vec = Vec::new();
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
     let core_id = core_ids[2];
@@ -534,13 +550,15 @@ fn do_ctx_yield() {
 	let overhead = timing_overhead_cycles(&mut pmc);
 	
 	for i in 0..TRIES {
-		let lat = do_ctx_yield_inner(overhead, i+1, TRIES, &mut pmc, core_id).expect("Error in spawn inner()");
+		let lat = do_ctx_yield_inner(overhead, i+1, TRIES, &mut pmc, core_id).expect("Error in ctx yield inner()");
+		vec.push(lat);
 
 		tries += lat;
 		if lat > max {max = lat;}
 		if lat < min {min = lat;}
 	}
 
+	print_stats(vec);
 	let lat = tries / TRIES as u64;
 	let err = (lat as f64* THRESHOLD_ERROR_RATIO) as u64;
 	if 	max - lat > err || lat - min > err {
@@ -550,17 +568,17 @@ fn do_ctx_yield() {
 	printlninfo!("CTX result: {} cycles", lat);
 }
 
-fn do_page_fault_inner(overhead: u64, th: usize, nr: usize, counter: &mut PerfCounter) -> u64 {
-	let mut byte = 237;
+fn do_page_fault_inner_libc(overhead: u64, th: usize, nr: usize, counter: &mut PerfCounter) -> Result<u64, &'static str> {
 	let mut delta_cycles_avg = 0;
-	let end: u64;
 	let n = 39;
 
 	let len: libc::size_t = 4096;
-	let prot: libc::c_int = libc::PROT_WRITE;
-	let flags: libc::c_int = libc::MAP_ANONYMOUS;
+	let prot: libc::c_int = libc::PROT_WRITE | libc::PROT_READ | libc::PROT_EXEC;
+	let flags: libc::c_int = libc::MAP_ANONYMOUS | libc::MAP_PRIVATE;
 	let fd: libc::c_int = -1;
 	let offset: libc::off_t = 0;
+
+	let mut byte = 237;
 
 	if MEASURE_CYCLE_COUNTS {
 		counter.reset();
@@ -571,38 +589,80 @@ fn do_page_fault_inner(overhead: u64, th: usize, nr: usize, counter: &mut PerfCo
 		let mut addr: *mut u8 = 0 as *mut u8;
 
 		unsafe{ 
-			libc::mmap(addr as *mut libc::c_void, len, prot, flags, fd, offset); 
-			println!("addr: {}", *addr);
+			let addr = libc::mmap(0 as *mut libc::c_void, len, prot, flags, fd, offset)  as *mut u8; 
+			// unsafe {println!("addr: {:#X}, value: {}", addr as usize, *addr); }
 			*addr = byte;
 			libc::munmap(addr as *mut libc::c_void, len);
 		}
 	}
 
-	// if MEASURE_CYCLE_COUNTS {
-	// 	end = counter.read();
+	if MEASURE_CYCLE_COUNTS {
+		let end = counter.read();
 
-	// 	let mut delta_cycles = end.expect("couldn't read counter");
-	// 	if delta_cycles < overhead {
-	// 		printlnwarn!("Ignore overhead for null because overhead({}) > diff({})", 
-	// 			overhead, delta_cycles);
-	// 	} else {
-	// 		delta_cycles -= overhead;
-	// 	}
+		let mut delta_cycles = end.expect("couldn't read counter");
+		if delta_cycles < overhead {
+			printlnwarn!("Ignore overhead for null because overhead({}) > diff({})", 
+				overhead, delta_cycles);
+		} else {
+			delta_cycles -= overhead;
+		}
 
-	// 	delta_cycles_avg = delta_cycles / ITERATIONS as u64;
+		delta_cycles_avg = delta_cycles / ITERATIONS as u64;
 
-	// 	printlninfo!("null_test_inner ({}/{}): {} total_cycles -> {} avg_cycles (ignore: {})", 
-	// 		th, nr, delta_cycles, delta_cycles_avg, pid);
-	// }
+		printlninfo!("null_test_inner ({}/{}): {} total_cycles -> {} avg_cycles", 
+			th, nr, delta_cycles, delta_cycles_avg);
+	}
 
-	delta_cycles_avg
+	Ok(delta_cycles_avg)
 }
+
+fn do_page_fault_inner(overhead: u64, th: usize, nr: usize, counter: &mut PerfCounter) -> Result<u64, &'static str> {
+	let mut byte = 237;
+	let mut delta_cycles_avg = 0;
+
+	let mut mmap_options = MmapOptions::new();
+
+	if MEASURE_CYCLE_COUNTS {
+		counter.reset();
+		counter.start();
+	}
+
+	for _ in 0..ITERATIONS {
+		let mut addr: *mut u8 = 0 as *mut u8;
+
+		unsafe{ 
+			let mmap = mmap_options.len(4096).map_anon().map_err(|_e| "Could not create anonymous mapping")?;
+		}
+	}
+
+	if MEASURE_CYCLE_COUNTS {
+		let end = counter.read();
+
+		let mut delta_cycles = end.expect("couldn't read counter");
+		if delta_cycles < overhead {
+			printlnwarn!("Ignore overhead for null because overhead({}) > diff({})", 
+				overhead, delta_cycles);
+		} else {
+			delta_cycles -= overhead;
+		}
+
+		delta_cycles_avg = delta_cycles / ITERATIONS as u64;
+
+		printlninfo!("null_test_inner ({}/{}): {} total_cycles -> {} avg_cycles", 
+			th, nr, delta_cycles, delta_cycles_avg);
+	}
+
+	Ok(delta_cycles_avg)
+}
+
 
 fn do_page_fault() {
 	let mut tries: u64 = 0;
 	let mut max: u64 = core::u64::MIN;
 	let mut min: u64 = core::u64::MAX;
 	let mut overhead: u64 = 0;
+	let mut vec = Vec::new();
+
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
 	let core_id = core_ids[2];
@@ -620,7 +680,8 @@ fn do_page_fault() {
 	}
 
 	for i in 0..TRIES {
-		let lat = do_page_fault_inner(overhead, i+1, TRIES, &mut pmc);
+		let lat = do_page_fault_inner_libc(overhead, i+1, TRIES, &mut pmc).expect("Page Fault bm failed.");
+		vec.push(lat);
 
 		tries += lat;
 		if lat > max {max = lat;}
@@ -628,6 +689,7 @@ fn do_page_fault() {
 	}
 
 	if MEASURE_CYCLE_COUNTS {
+		print_stats(vec);
 		let lat = tries / TRIES as u64;
 		let err = (lat as f64 * THRESHOLD_ERROR_RATIO) as u64;
 		if max - lat > err || lat - min > err {
@@ -638,7 +700,132 @@ fn do_page_fault() {
 	}
 }
 
-fn do_ipc() {}
+fn do_ipc_inner(overhead: u64, th: usize, nr: usize, counter: &mut PerfCounter, core_id: core_affinity::CoreId) -> Result<u64, &'static str> {
+	let mut intermediate = Ok(0);
+	let end;
+	let mut delta_cycles_avg = 0;
+
+	let (mut reader1, mut writer1) = pipe().map_err(|_e| "Unable to create pipe")?;
+	let (mut reader2, mut writer2) = pipe().map_err(|_e| "Unable to create pipe")?;
+
+    let id3 = core_id.clone();
+    let id4 = id3.clone();
+    let id2 = id3.clone();
+    let id1 = id3.clone();
+
+	if MEASURE_CYCLE_COUNTS {
+		counter.reset();
+		counter.start();
+	}
+
+        
+		let child3 = thread::spawn(move || {
+            core_affinity::set_for_current(id3);
+        });
+
+        child3.join().expect("oops! the child thread panicked");
+
+        let child4 = thread::spawn(move || {
+            core_affinity::set_for_current(id4);
+        });
+
+        child4.join().expect("oops! the child thread panicked");
+
+		if MEASURE_CYCLE_COUNTS {
+    		intermediate = counter.read();
+		}
+
+        let child1 = thread::spawn(move || {
+            core_affinity::set_for_current(id1);
+			let mut val = [22];
+
+            for id in 0..ITERATIONS {
+            	writer1.write(&val).expect("unable to write to pipe");
+				reader2.read(&mut val).expect("unable to write to pipe");
+            }
+
+            // Sending is a non-blocking operation, the thread will continue
+            // immediately after sending its message
+            
+        });
+
+
+        let child2 = thread::spawn(move || {
+            core_affinity::set_for_current(id2);
+			let mut val = [32];
+
+            for id in 0..ITERATIONS {
+            	let res = reader1.read(&mut val);
+				// println!("reader 1: {}", res.unwrap());
+				let res = writer2.write(&val);
+				// println!("writer 2: {}", res.unwrap());
+            }
+            // Sending is a non-blocking operation, the thread will continue
+            // immediately after sending its message
+        });
+
+
+    child1.join().expect("oops! the child thread panicked");
+    child2.join().expect("oops! the child thread panicked");
+
+    if MEASURE_CYCLE_COUNTS {
+		end = counter.read();
+
+		let overhead_delta = intermediate.expect("couldn't read counter");
+		let overhead_time = overhead_delta;
+		let delta = end.expect("couldn't read counter") - overhead_delta - overhead_delta; // twice subtracted, once because it's the starting time and once because it's the overhead.
+		let delta_cycles= delta;
+		delta_cycles_avg = delta_cycles / (ITERATIONS*2) as u64; // *2 for one way IPC time
+
+		printlninfo!("do_ipc_inner ({}/{}): : overhead {}, {} total_cycles -> {} avg_cycles", 
+			th, nr, overhead_time, delta_cycles, delta_cycles_avg);
+	}
+
+	Ok(delta_cycles_avg)
+}
+
+fn do_ipc() {
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
+	let mut overhead: u64 = 0;
+	let mut vec = Vec::new();
+
+	let core_ids = core_affinity::get_core_ids().unwrap();
+    let core_id = core_ids[2];
+	core_affinity::set_for_current(core_id);
+
+	let mut pmc: PerfCounter = Builder::from_hardware_event(Hardware::RefCPUCycles)
+		.on_cpu(core_id.id as isize)
+        .for_all_pids()
+        .finish()
+        .expect("Could not create counter");
+	
+	if MEASURE_CYCLE_COUNTS {
+		overhead = timing_overhead_cycles(&mut pmc);
+	}
+	
+	for i in 0..TRIES {
+		let lat = do_ipc_inner(overhead, i+1, TRIES, &mut pmc, core_id).expect("Error in IPC inner()");
+		vec.push(lat);
+
+		tries += lat;
+		if lat > max {max = lat;}
+		if lat < min {min = lat;}
+	}
+
+	if MEASURE_CYCLE_COUNTS {
+
+		print_stats(vec);
+		let lat = tries / TRIES as u64;
+		let err = (lat as f64* THRESHOLD_ERROR_RATIO) as u64;
+		if 	max - lat > err || lat - min > err {
+			printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
+		}
+
+		printlninfo!("IPC result: {} cycles", lat);
+	}
+}
 
 fn print_header() {
 	printlninfo!("========================================");
@@ -688,4 +875,66 @@ fn main() {
 
     	_ => {printlninfo!("Unknown command: {}", env::args().nth(1).unwrap());}
     }
+}
+
+fn print_stats(vec: Vec<u64>) {
+	let avg;
+  	let median;
+  	let perf_75;
+	let perf_25;
+	let min;
+	let max;
+	let var;
+	let std_dev;
+
+  	{ // calculate average
+		let mut sum: u64 = 0;
+		for x in &vec {
+			sum = sum + x;
+		}
+
+		avg = sum as u64 / vec.len() as u64;
+  	}
+
+	{ // calculate median
+		let mut vec2 = vec.clone();
+		vec2.sort();
+		let mid = vec2.len() / 2;
+		let p_75 = vec2.len() *3 / 4;
+		let p_25 = vec2.len() *1 / 4;
+
+		median = vec2[mid];
+		perf_25 = vec2[p_25];
+		perf_75 = vec2[p_75];
+		min = vec2[0];
+		max = vec2[vec.len() - 1];
+  	}
+
+	{ // calculate sample variance
+		let mut diff_sum: u64 = 0;
+      	for x in &vec {
+			if x > &avg {
+				diff_sum = diff_sum + ((x-avg)*(x-avg));
+			}
+			else {
+				diff_sum = diff_sum + ((avg - x)*(avg -x));
+			}
+      	}
+
+    	var = (diff_sum) / (vec.len() as u64 - 1);
+	}
+
+	{ // calculate the standard deviation
+		std_dev = libm::sqrt(var as f64);		
+	}
+
+	printlninfo!("\n  mean : {}",avg);
+	printlninfo!("\n  variance  : {}",var);
+	printlninfo!("\n  standard deviation  : {}",std_dev);
+	printlninfo!("\n  max  : {}",max);
+	printlninfo!("\n  min  : {}",min);
+	printlninfo!("\n  p_50 : {}",median);
+	printlninfo!("\n  p_25 : {}",perf_25);
+	printlninfo!("\n  p_75 : {}",perf_75);
+	printlninfo!("\n");
 }
