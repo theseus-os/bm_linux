@@ -11,6 +11,8 @@ perfcnt = "0.5.0"
 memmap = "0.7.0"
 libm = "0.1.4"
 os_pipe = "0.9.1"
+mmap = "0.1.1"
+page_size = "0.4.2"
 
 
 [dependencies.core_affinity]

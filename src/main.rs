@@ -7,6 +7,8 @@ extern crate perfcnt;
 extern crate memmap;
 extern crate libm;
 extern crate os_pipe;
+extern crate mmap;
+extern crate page_size;
 
 use std::env;
 use std::fs::{self, File};
@@ -15,11 +17,13 @@ use std::process::{self, Command, Stdio};
 use std::io::{Read, Write, SeekFrom, Seek};
 use std::path::Path;
 use std::{thread, time};
-
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
-use hwloc::{Topology, ObjectType, CPUBIND_THREAD, CpuSet};
 use std::sync::{Arc,Mutex};
+
+use hwloc::{Topology, ObjectType, CPUBIND_THREAD, CpuSet};
+use mmap::{MemoryMap,MapOption};
+use libc::{c_void, size_t, c_int};
 
 use perfcnt::{PerfCounter, AbstractPerfCounter};
 use perfcnt::linux::HardwareEventType as Hardware;
@@ -827,6 +831,177 @@ fn do_ipc() {
 	}
 }
 
+/// Evaluation of linux memory management by creating, merging and deleting virtual memory areas
+/// Similar to mm_eval in Theseus
+fn mm_eval(num_mappings: usize, size_of_mapping_in_pages: usize) {
+	let start_vaddr: usize = 0xFFFF_0000_0000_0000; // the start of the 500th P4 (PML4) entry
+	const TRIES: usize = 100; 
+
+	let mut create_times: Vec<u64> = Vec::with_capacity(TRIES);
+    let mut remap_times: Vec<u64> = Vec::with_capacity(TRIES);
+    let mut unmap_times: Vec<u64> = Vec::with_capacity(TRIES);
+
+	let core_ids = core_affinity::get_core_ids().unwrap();
+    let core_id = core_ids[2];
+	core_affinity::set_for_current(core_id);
+
+	let mut pmc: PerfCounter = Builder::from_hardware_event(Hardware::RefCPUCycles)
+		.on_cpu(core_id.id as isize)
+        .for_all_pids()
+        .finish()
+        .expect("Could not create counter");
+
+
+	for i in 0..TRIES {
+
+		// (1) create mappings
+		let result_create = create_mappings(size_of_mapping_in_pages, num_mappings, &mut pmc, "LINUX CREATE MAP");
+		if result_create.is_err() {
+			println!("Could not create mappings");
+		}
+		// (2) perform remappings
+		let (mut create_mappings, create_time) = result_create.unwrap();
+		create_times.push(create_time);
+		
+		let remap_time = remap(&create_mappings, size_of_mapping_in_pages, num_mappings, &mut pmc);
+		remap_times.push(remap_time);
+		
+		// (3) perform unmappings
+		let unmap_time = unmap(&mut create_mappings, &mut pmc);	
+		unmap_times.push(unmap_time);
+			
+	}
+
+	println!("Create Mappings");
+    print_stats(create_times);
+
+    println!("Remap Mappings");
+    print_stats(remap_times);
+    
+    println!("Unmap Mappings");
+    print_stats(unmap_times);
+}
+
+fn create_mappings(size_in_pages: usize, num_mappings: usize, counter: &mut PerfCounter, type_of_mapping: &str) -> Result<(Vec<MemoryMap>, u64), &'static str>{
+	// unsafe { libc::mlockall(libc::MCL_FUTURE); }
+
+	let mut mmap_options = [MapOption::MapWritable]; // MapOption::MapNonStandardFlags(libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_POPULATE)];
+	let mut mapped_pages: Vec<MemoryMap> = Vec::with_capacity(num_mappings);
+	let size_in_bytes = size_in_pages * page_size::get();
+	let mut delta_cycles = 0;
+	let mut overhead = 0;
+
+	if MEASURE_CYCLE_COUNTS {
+		overhead = timing_overhead_cycles(counter);
+	}
+
+	if MEASURE_CYCLE_COUNTS {
+		counter.reset();
+		counter.start();
+	}
+	
+	for i in 0..num_mappings {
+
+		match MemoryMap::new(size_in_bytes, &mmap_options) {
+			Ok(mapping) => {
+				mapped_pages.push(mapping);
+			} 
+			Err(_x) => {
+				return Err("Could not map page");
+			}
+		}
+	}
+	
+	if MEASURE_CYCLE_COUNTS {
+		let end = counter.read();
+
+		delta_cycles = end.expect("couldn't read counter");
+		if delta_cycles < overhead {
+			printlnwarn!("Ignore overhead for null because overhead({}) > diff({})", 
+				overhead, delta_cycles);
+		} else {
+			delta_cycles -= overhead;
+		}
+	}
+	
+	Ok((mapped_pages, delta_cycles))
+}
+
+fn remap(mem_mappings: &Vec<MemoryMap>, size_in_pages: usize, num_mappings: usize, counter: &mut PerfCounter) -> u64 {
+	let size_in_bytes = size_in_pages * page_size::get();
+	let mut delta_cycles = 0;
+	let mut overhead = 0;
+
+	if MEASURE_CYCLE_COUNTS {
+		overhead = timing_overhead_cycles(counter);
+	}
+
+	if MEASURE_CYCLE_COUNTS {
+		counter.reset();
+		counter.start();
+	}
+
+	for i in 0..num_mappings {
+		let vaddr = mem_mappings[i].data();
+		let len = mem_mappings[i].len();
+
+		unsafe { 
+			let err = libc::mprotect(vaddr as *mut usize as *mut c_void, len, libc::PROT_READ);
+			if err != 0 {
+				println!("ERROR!: mprotect not working");
+			}
+		}
+	}
+	
+	if MEASURE_CYCLE_COUNTS {
+		let end = counter.read();
+
+		delta_cycles = end.expect("couldn't read counter");
+		if delta_cycles < overhead {
+			printlnwarn!("Ignore overhead for null because overhead({}) > diff({})", 
+				overhead, delta_cycles);
+		} else {
+			delta_cycles -= overhead;
+		}
+	}
+
+
+	delta_cycles
+}
+
+fn unmap(mappings: &mut Vec<MemoryMap>, counter: &mut PerfCounter) -> u64 {
+	let num_mappings = mappings.len();
+	let size = mappings[0].len();
+	let mut delta_cycles = 0;
+	let mut overhead = 0;
+
+	if MEASURE_CYCLE_COUNTS {
+		overhead = timing_overhead_cycles(counter);
+	}
+
+	if MEASURE_CYCLE_COUNTS {
+		counter.reset();
+		counter.start();
+	}
+	for i in 0..num_mappings {
+		std::mem::drop(mappings.pop());
+	}
+
+	if MEASURE_CYCLE_COUNTS {
+		let end = counter.read();
+
+		delta_cycles = end.expect("couldn't read counter");
+		if delta_cycles < overhead {
+			printlnwarn!("Ignore overhead for null because overhead({}) > diff({})", 
+				overhead, delta_cycles);
+		} else {
+			delta_cycles -= overhead;
+		}
+	}
+
+	delta_cycles
+}
+
 fn print_header() {
 	printlninfo!("========================================");
 	printlninfo!("Time unit : nano sec");
@@ -839,7 +1014,7 @@ fn print_header() {
 fn main() {
 	let prog = env::args().nth(0).unwrap();
 
-    if env::args().count() != 2 {
+    if env::args().count() != 2 && env::args().count() != 4  {
     	print_usage(&prog);
     	return;
     }
@@ -872,6 +1047,16 @@ fn main() {
 		"ipc" => {
     		do_ipc();
     	}
+		"mm_eval" => {
+			if env::args().count() == 4 {
+				let num_mappings = env::args().nth(2).unwrap().parse::<usize>().ok().unwrap_or(100);
+				let size_in_pages = env::args().nth(3).unwrap().parse::<usize>().ok().unwrap_or(2);
+				mm_eval(num_mappings, size_in_pages);
+			}
+			else {
+				println!("Not enough arguments for mm_eval");
+			}
+		}
 
     	_ => {printlninfo!("Unknown command: {}", env::args().nth(1).unwrap());}
     }
@@ -932,9 +1117,9 @@ fn print_stats(vec: Vec<u64>) {
 	printlninfo!("\n  variance  : {}",var);
 	printlninfo!("\n  standard deviation  : {}",std_dev);
 	printlninfo!("\n  max  : {}",max);
-	printlninfo!("\n  min  : {}",min);
 	printlninfo!("\n  p_50 : {}",median);
 	printlninfo!("\n  p_25 : {}",perf_25);
 	printlninfo!("\n  p_75 : {}",perf_75);
+	printlninfo!("\n  min  : {}",min);
 	printlninfo!("\n");
 }

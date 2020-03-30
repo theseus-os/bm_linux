@@ -75,8 +75,8 @@ pub fn timing_overhead_inner_cycles(th: usize, nr: usize, counter: &mut PerfCoun
 	let delta_cycles = counter.read().expect("Couldn't read counter");
 	let delta_cycles_avg = delta_cycles/ ITERATIONS as u64;
 
-	printlninfo!("t_overhead_inner ({}/{}): {:.2} total_cycles -> {:.2} avg_cycles", 
-		th, nr, delta_cycles, delta_cycles_avg);
+	// printlninfo!("t_overhead_inner ({}/{}): {:.2} total_cycles -> {:.2} avg_cycles", 
+		// th, nr, delta_cycles, delta_cycles_avg);
 
 	delta_cycles_avg
 }
@@ -99,7 +99,7 @@ pub fn timing_overhead_cycles(counter: &mut PerfCounter) -> u64 {
 		printlnwarn!("timing_overhead diff is too big: {:.2} ({:.2} - {:.2}) ns", max-min, max, min);
 	}
 
-	printlninfo!("Timing overhead: {} cycles\n\n", overhead);
+	// printlninfo!("Timing overhead: {} cycles\n\n", overhead);
 
 	overhead
 }
