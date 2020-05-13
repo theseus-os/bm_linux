@@ -1,9 +1,9 @@
 use std::time::Instant;
 use perfcnt::{PerfCounter, AbstractPerfCounter};
 
-pub const ITERATIONS: usize = 1_000_0;
+pub const ITERATIONS: usize = 10_000;
 pub const TRIES: usize = 10;
-pub const THRESHOLD_ERROR_RATIO: f64 = 0.1;
+pub const THRESHOLD_ERROR_RATIO: f64 = 1.0;
 pub const SEC_TO_NANO: f64 = 1_000_000_000.0;
 
 macro_rules! printlninfo {
