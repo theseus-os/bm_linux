@@ -9,6 +9,7 @@ extern crate libm;
 extern crate os_pipe;
 extern crate mmap;
 extern crate page_size;
+extern crate hashbrown;
 
 use std::env;
 use std::fs::{self, File};
@@ -32,6 +33,8 @@ use perfcnt::linux::PerfCounterBuilderLinux as Builder;
 use memmap::MmapOptions;
 
 use os_pipe::pipe;
+
+use hashbrown::HashMap;
 
 #[macro_use]
 mod timing;
@@ -744,63 +747,73 @@ fn main() {
 }
 
 fn print_stats(vec: Vec<u64>) {
-	let avg;
+	let mean;
   	let median;
-  	let perf_75;
-	let perf_25;
+	let mode;
+  	let p_75;
+	let p_25;
 	let min;
 	let max;
 	let var;
-	let std_dev;
+    let std_dev;
+
+	if vec.is_empty() {
+		return;
+	}
+
+	let len = vec.len();
 
   	{ // calculate average
-		let mut sum = 0;
-		for x in &vec {
-			sum = sum + x;
-		}
-
-		avg = sum  / vec.len() as u64;
+		let sum: u64 = vec.iter().sum();
+		mean = sum as f64 / len as f64;
   	}
 
 	{ // calculate median
 		let mut vec2 = vec.clone();
 		vec2.sort();
-		let mid = vec2.len() / 2;
-		let p_75 = vec2.len() *3 / 4;
-		let p_25 = vec2.len() *1 / 4;
+		let mid = len / 2;
+		let i_75 = len * 3 / 4;
+		let i_25 = len * 1 / 4;
 
 		median = vec2[mid];
-		perf_25 = vec2[p_25];
-		perf_75 = vec2[p_75];
+		p_25 = vec2[i_25];
+		p_75 = vec2[i_75];
 		min = vec2[0];
-		max = vec2[vec.len() - 1];
+		max = vec2[len - 1];
   	}
 
 	{ // calculate sample variance
-		let mut diff_sum: u64 = 0;
-      	for x in &vec {
-			if x > &avg {
-				diff_sum = diff_sum + ((x-avg)*(x-avg));
+		let mut diff_sum: f64 = 0.0;
+      	for val in &vec {
+			let x = *val as f64; 
+			if x > mean {
+				diff_sum = diff_sum + ((x - mean)*(x - mean));
 			}
 			else {
-				diff_sum = diff_sum + ((avg - x)*(avg -x));
+				diff_sum = diff_sum + ((mean - x)*(mean - x));
 			}
       	}
 
-    	var = (diff_sum) / (vec.len() as u64 - 1);
+    	var = (diff_sum) / (len as f64);
+        std_dev = libm::sqrt(var);
 	}
 
-	{ // calculate the standard deviation
-		std_dev = libm::sqrt(var as f64);		
+	{ // calculate mode
+		let mut values: HashMap<u64,usize> = HashMap::with_capacity(len);
+		for val in &vec {
+			values.entry(*val).and_modify(|v| {*v += 1}).or_insert(1);
+		}
+		mode = *values.iter().max_by(|(_k1,v1), (_k2,v2)| v1.cmp(v2)).unwrap().0; // safe to call unwrap since we've already checked if the vector is empty
 	}
 
-	printlninfo!("\n  mean : {}",avg);
-	printlninfo!("\n  variance  : {}",var);
+	printlninfo!("\n  min  		: {}",min);
+	printlninfo!("\n  p_25 		: {}",p_25);
+	printlninfo!("\n  median 	: {}",median);
+	printlninfo!("\n  p_75 		: {}",p_75);
+	printlninfo!("\n  max  		: {}",max);
+	printlninfo!("\n  mode 		: {}",mode);
+	printlninfo!("\n  mean 		: {}",mean);
 	printlninfo!("\n  standard deviation  : {}",std_dev);
-	printlninfo!("\n  max  : {}",max);
-	printlninfo!("\n  p_50 : {}",median);
-	printlninfo!("\n  p_25 : {}",perf_25);
-	printlninfo!("\n  p_75 : {}",perf_75);
-	printlninfo!("\n  min  : {}",min);
+
 	printlninfo!("\n");
 }

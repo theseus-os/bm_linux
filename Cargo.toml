@@ -17,3 +17,7 @@ page_size = "0.4.2"
 
 [dependencies.core_affinity]
 git = "https://github.com/Ramla-I/core_affinity_rs.git"
+
+[dependencies.hashbrown]
+version = "0.1.8"
+features = ["nightly"]
