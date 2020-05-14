@@ -3,7 +3,7 @@ use perfcnt::{PerfCounter, AbstractPerfCounter};
 
 pub const ITERATIONS: usize = 10_000;
 pub const TRIES: usize = 10;
-pub const THRESHOLD_ERROR_RATIO: f64 = 1.0;
+pub const THRESHOLD_ERROR_RATIO: u64 = 1;
 pub const SEC_TO_NANO: f64 = 1_000_000_000.0;
 
 macro_rules! printlninfo {
@@ -17,7 +17,7 @@ macro_rules! printlnwarn {
 }
 
 // overhead is TIME
-pub fn timing_overhead_inner(th: usize, nr: usize) -> f64 {
+pub fn timing_overhead_inner(th: usize, nr: usize) -> u64 {
 	let mut temp;
 	let start;
 	let end;
@@ -31,8 +31,8 @@ pub fn timing_overhead_inner(th: usize, nr: usize) -> f64 {
 	end = Instant::now();
 
 	let delta = end - start;
-	let delta_time = delta.as_nanos() as f64;
-	let delta_time_avg = delta_time / ITERATIONS as f64;
+	let delta_time = delta.as_nanos() as u64;
+	let delta_time_avg = delta_time / ITERATIONS as u64;
 
 	printlninfo!("t_overhead_inner ({}/{}): {} total -> {:.2} avg_ns (ignore: {})", 
 		th, nr, delta_time, delta_time_avg, temp.elapsed().as_nanos());
@@ -41,10 +41,10 @@ pub fn timing_overhead_inner(th: usize, nr: usize) -> f64 {
 }
 
 // overhead is TIME
-pub fn timing_overhead() -> f64 {
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+pub fn timing_overhead() -> u64 {
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
 
 	for i in 0..TRIES {
 		let overhead = timing_overhead_inner(i+1, TRIES);
@@ -53,8 +53,9 @@ pub fn timing_overhead() -> f64 {
 		if overhead < min {min = overhead;}
 	}
 
-	let overhead = tries / TRIES as f64;
-	let err = overhead * THRESHOLD_ERROR_RATIO;
+	let overhead = tries / TRIES as u64;
+	// We expect the maximum and minimum to be within 10*THRESHOLD_ERROR_RATIO % of the mean value
+	let err = (overhead * 10 * THRESHOLD_ERROR_RATIO) / 100;
 	if 	max - overhead > err || overhead - min > err {
 		printlnwarn!("timing_overhead diff is too big: {:.2} ({:.2} - {:.2}) ns", max-min, max, min);
 	}
@@ -94,7 +95,8 @@ pub fn timing_overhead_cycles(counter: &mut PerfCounter) -> u64 {
 	}
 
 	let overhead = tries / TRIES as u64;
-	let err = (overhead as f64 * THRESHOLD_ERROR_RATIO) as u64;
+	// We expect the maximum and minimum to be within 10*THRESHOLD_ERROR_RATIO % of the mean value
+	let err = (overhead * 10 * THRESHOLD_ERROR_RATIO) / 100;
 	if 	max - overhead > err || overhead - min > err {
 		printlnwarn!("timing_overhead diff is too big: {:.2} ({:.2} - {:.2}) ns", max-min, max, min);
 	}

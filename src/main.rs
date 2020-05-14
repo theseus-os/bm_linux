@@ -66,7 +66,7 @@ fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
     }
 }
 
-fn do_null_inner(overhead_ns: f64, th: usize, nr: usize) -> f64 {
+fn do_null_inner(overhead_ns: u64, th: usize, nr: usize) -> u64 {
 	let start;
 	let end;
 	let mut pid = 0;
@@ -78,7 +78,7 @@ fn do_null_inner(overhead_ns: f64, th: usize, nr: usize) -> f64 {
 	end = Instant::now();
 
 	let delta = end - start;
-	let mut delta_time = delta.as_nanos() as f64;
+	let mut delta_time = delta.as_nanos() as u64;
 	if delta_time < overhead_ns {
 		printlnwarn!("Ignore overhead for null because overhead({:.2}) > diff({:.2})", 
 			overhead_ns, delta_time);
@@ -86,7 +86,7 @@ fn do_null_inner(overhead_ns: f64, th: usize, nr: usize) -> f64 {
 		delta_time -= overhead_ns;
 	}
 
-	let delta_time_avg = delta_time / ITERATIONS as f64;
+	let delta_time_avg = delta_time as u64 / ITERATIONS as u64;
 
 	printlninfo!("null_test_inner ({}/{}): {} total_ns -> {} avg_ns (ignore: {})", 
 		th, nr, delta_time, delta_time_avg, pid);
@@ -95,9 +95,9 @@ fn do_null_inner(overhead_ns: f64, th: usize, nr: usize) -> f64 {
 }
 
 fn do_null() {
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
 	let mut vec = Vec::with_capacity(TRIES);
 	let overhead = timing_overhead();
 
@@ -111,9 +111,9 @@ fn do_null() {
 		if lat < min {min = lat;}
 	}
 
-	let lat = tries / TRIES as f64;
+	let lat = tries / TRIES as u64;
 	// We expect the maximum and minimum to be within 10*THRESHOLD_ERROR_RATIO % of the mean value
-	let err = (lat * 10.0 * THRESHOLD_ERROR_RATIO) / 100.0;
+	let err = (lat * 10 * THRESHOLD_ERROR_RATIO) / 100;
 	if max - lat > err || lat - min > err {
 		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
 	}
@@ -122,7 +122,7 @@ fn do_null() {
 	print_stats(vec);
 }
 
-fn do_spawn_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
+fn do_spawn_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static str> {
     let start;
 	let end;
 
@@ -139,8 +139,8 @@ fn do_spawn_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'stati
     end = Instant::now();
 
     let delta = end - start;
-	let delta_time = delta.as_nanos() as f64 - overhead_ns;
-	let delta_time_avg = delta_time / ITERATIONS as f64;
+	let delta_time = delta.as_nanos() as u64 - overhead_ns;
+	let delta_time_avg = delta_time / ITERATIONS as u64;
 
     printlninfo!("spawn_test_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
 		th, nr, delta_time, delta_time_avg);
@@ -149,7 +149,7 @@ fn do_spawn_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'stati
 }
 
 // because Rust version is too slow, I double check with libc version.
-fn do_spawn_inner_libc(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
+fn do_spawn_inner_libc(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static str> {
     let start;
 	let end;
 
@@ -175,8 +175,8 @@ fn do_spawn_inner_libc(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'
     end = Instant::now();
 
     let delta = end - start;
-	let delta_time = delta.as_nanos() as f64 - overhead_ns;
-	let delta_time_avg = delta_time / ITERATIONS as f64;
+	let delta_time = delta.as_nanos() as u64 - overhead_ns;
+	let delta_time_avg = delta_time / ITERATIONS as u64;
 
     printlninfo!("spawn_test_inner (libc) ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
 		th, nr, delta_time, delta_time_avg);
@@ -186,9 +186,9 @@ fn do_spawn_inner_libc(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'
 
 fn do_spawn(rust_only: bool) {
 	let mut vec = Vec::with_capacity(TRIES);
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
 
 	let overhead_ns = timing_overhead();
 	
@@ -206,9 +206,9 @@ fn do_spawn(rust_only: bool) {
 		if lat < min {min = lat;}
 	}
 
-	let lat = tries / TRIES as f64;
+	let lat = tries / TRIES as u64;
 	// We expect the maximum and minimum to be within 10*THRESHOLD_ERROR_RATIO % of the mean value
-	let err = (lat * 10.0 * THRESHOLD_ERROR_RATIO) / 100.0;
+	let err = (lat * 10 * THRESHOLD_ERROR_RATIO) / 100;
 	if 	max - lat > err || lat - min > err {
 		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
 	}
@@ -218,7 +218,7 @@ fn do_spawn(rust_only: bool) {
 }
 
 
-fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
+fn do_ctx_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static str> {
     let start;
     let intermediate;
 	let end;
@@ -326,10 +326,10 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
     end = Instant::now();
 
     let overhead_delta = intermediate - start;
-    let overhead_time = overhead_delta.as_nanos() as f64;
+    let overhead_time = overhead_delta.as_nanos() as u64;
     let delta = end - intermediate - overhead_delta;
-	let delta_time = delta.as_nanos() as f64;
-	let delta_time_avg = delta_time / (ITERATIONS*2) as f64;
+	let delta_time = delta.as_nanos() as u64;
+	let delta_time_avg = delta_time / (ITERATIONS*2) as u64;
 
     printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
 		th, nr, overhead_time, delta_time, delta_time_avg);
@@ -340,9 +340,9 @@ fn do_ctx_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static 
 
 fn do_ctx() {
 	let mut vec = Vec::with_capacity(TRIES);
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
 
 	let overhead_ns = timing_overhead();
 	
@@ -354,9 +354,9 @@ fn do_ctx() {
 		if lat < min {min = lat;}
 	}
 
-	let lat = tries / TRIES as f64;
+	let lat = tries / TRIES as u64;
 	// We expect the maximum and minimum to be within 10*THRESHOLD_ERROR_RATIO % of the mean value
-	let err = (lat * 10.0 * THRESHOLD_ERROR_RATIO) / 100.0;
+	let err = (lat * 10 * THRESHOLD_ERROR_RATIO) / 100;
 	if 	max - lat > err || lat - min > err {
 		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
 	}
@@ -365,7 +365,7 @@ fn do_ctx() {
 	print_stats(vec);
 }
 
-fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
+fn do_ctx_yield_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static str> {
     let start;
     let intermediate;
 	let end;
@@ -447,10 +447,10 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
     end = Instant::now();
 
     let overhead_delta = intermediate - start;
-    let overhead_time = overhead_delta.as_nanos() as f64;
+    let overhead_time = overhead_delta.as_nanos() as u64;
     let delta = end - intermediate - overhead_delta;
-	let delta_time = delta.as_nanos() as f64;
-	let delta_time_avg = delta_time / (ITERATIONS*2) as f64;
+	let delta_time = delta.as_nanos() as u64;
+	let delta_time_avg = delta_time / (ITERATIONS*2) as u64;
 
     printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
 		th, nr, overhead_time, delta_time, delta_time_avg);
@@ -461,9 +461,9 @@ fn do_ctx_yield_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'s
 
 fn do_ctx_yield() {
 	let mut vec = Vec::with_capacity(TRIES);
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
 
 	let overhead_ns = timing_overhead();
 	
@@ -477,9 +477,9 @@ fn do_ctx_yield() {
 		if lat < min {min = lat;}
 	}
 
-	let lat = tries / TRIES as f64;
+	let lat = tries / TRIES as u64;
 	// We expect the maximum and minimum to be within 10*THRESHOLD_ERROR_RATIO % of the mean value
-	let err = (lat * 10.0 * THRESHOLD_ERROR_RATIO) / 100.0;
+	let err = (lat * 10 * THRESHOLD_ERROR_RATIO) / 100;
 	if 	max - lat > err || lat - min > err {
 		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
 	}
@@ -488,7 +488,7 @@ fn do_ctx_yield() {
 	print_stats(vec);
 }
 
-fn do_memory_map_inner_libc(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
+fn do_memory_map_inner_libc(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static str> {
     let start;
 	let end;
 
@@ -513,8 +513,8 @@ fn do_memory_map_inner_libc(overhead_ns: f64, th: usize, nr: usize) -> Result<f6
     end = Instant::now();
 
     let delta = end - start;
-	let delta_time = delta.as_nanos() as f64 - overhead_ns;
-	let delta_time_avg = delta_time / ITERATIONS as f64;
+	let delta_time = delta.as_nanos() as u64 - overhead_ns;
+	let delta_time_avg = delta_time / ITERATIONS as u64;
 
     printlninfo!("memory_map_test_inner (libc) ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
 		th, nr, delta_time, delta_time_avg);
@@ -522,7 +522,7 @@ fn do_memory_map_inner_libc(overhead_ns: f64, th: usize, nr: usize) -> Result<f6
 	Ok(delta_time_avg)
 }
 
-fn do_memory_map_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'static str> {
+fn do_memory_map_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static str> {
     let size_in_bytes = 4096;
 	let start;
 	let end;
@@ -545,8 +545,8 @@ fn do_memory_map_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'
     end = Instant::now();
 
     let delta = end - start;
-	let delta_time = delta.as_nanos() as f64 - overhead_ns;
-	let delta_time_avg = delta_time / ITERATIONS as f64;
+	let delta_time = delta.as_nanos() as u64 - overhead_ns;
+	let delta_time_avg = delta_time / ITERATIONS as u64;
 
     printlninfo!("memory_map_test_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
 		th, nr, delta_time, delta_time_avg);
@@ -558,9 +558,9 @@ fn do_memory_map_inner(overhead_ns: f64, th: usize, nr: usize) -> Result<f64, &'
 
 fn do_memory_map() {
 	let mut vec = Vec::with_capacity(TRIES);
-	let mut tries: f64 = 0.0;
-	let mut max: f64 = core::f64::MIN;
-	let mut min: f64 = core::f64::MAX;
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
 	let overhead = timing_overhead();
 
 	for i in 0..TRIES {
@@ -574,9 +574,9 @@ fn do_memory_map() {
 	}
 
 	print_stats(vec);
-	let lat = tries / TRIES as f64;
+	let lat = tries / TRIES as u64;
 	// We expect the maximum and minimum to be within 10*THRESHOLD_ERROR_RATIO % of the mean value
-	let err = (lat * 10.0 * THRESHOLD_ERROR_RATIO) / 100.0;
+	let err = (lat * 10 * THRESHOLD_ERROR_RATIO) / 100;
 	if max - lat > err || lat - min > err {
 		printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
 	}
@@ -585,7 +585,7 @@ fn do_memory_map() {
 }
 
 
-fn do_ipc_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<f64, &'static str> {
+fn do_ipc_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<u64, &'static str> {
 	let start;
 	let end;
 	let intermediate;
@@ -650,10 +650,10 @@ fn do_ipc_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<
 	end = Instant::now();
 
     let overhead_delta = intermediate - start;
-    let overhead_time = overhead_delta.as_nanos() as f64;
+    let overhead_time = overhead_delta.as_nanos() as u64;
     let delta = end - intermediate - overhead_delta;
-	let delta_time = delta.as_nanos() as f64;
-	let delta_time_avg = delta_time / (ITERATIONS*2) as f64; //*2 for 1 way IPC time
+	let delta_time = delta.as_nanos() as u64;
+	let delta_time_avg = delta_time / (ITERATIONS*2) as u64; //*2 for 1 way IPC time
 
     printlninfo!("do_ipc_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
 		th, nr, overhead_time, delta_time, delta_time_avg);
@@ -662,9 +662,9 @@ fn do_ipc_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<
 }
 
 fn do_ipc() {
-	let mut tries = 0.0;
-	let mut max = core::f64::MIN;
-	let mut min = core::f64::MAX;
+	let mut tries = 0;
+	let mut max = core::u64::MIN;
+	let mut min = core::u64::MAX;
 	let mut vec = Vec::with_capacity(TRIES);
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
@@ -681,9 +681,9 @@ fn do_ipc() {
 	}
 
 
-	let lat = tries / TRIES as f64;
+	let lat = tries / TRIES as u64;
 	// We expect the maximum and minimum to be within 10*THRESHOLD_ERROR_RATIO % of the mean value
-	let err = (lat * 10.0 * THRESHOLD_ERROR_RATIO) / 100.0;
+	let err = (lat * 10 * THRESHOLD_ERROR_RATIO) / 100;
 	if 	max - lat > err || lat - min > err {
 		printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
 	}
@@ -743,64 +743,64 @@ fn main() {
     }
 }
 
-fn print_stats(vec: Vec<f64>) {
-	// let avg;
-  	// let median;
-  	// let perf_75;
-	// let perf_25;
-	// let min;
-	// let max;
-	// let var;
-	// let std_dev;
+fn print_stats(vec: Vec<u64>) {
+	let avg;
+  	let median;
+  	let perf_75;
+	let perf_25;
+	let min;
+	let max;
+	let var;
+	let std_dev;
 
-  	// { // calculate average
-	// 	let mut sum = 0.0;
-	// 	for x in &vec {
-	// 		sum = sum + x;
-	// 	}
+  	{ // calculate average
+		let mut sum = 0;
+		for x in &vec {
+			sum = sum + x;
+		}
 
-	// 	avg = sum  / vec.len() as f64;
-  	// }
+		avg = sum  / vec.len() as u64;
+  	}
 
-	// { // calculate median
-	// 	let mut vec2 = vec.clone();
-	// 	vec2.sort();
-	// 	let mid = vec2.len() / 2;
-	// 	let p_75 = vec2.len() *3 / 4;
-	// 	let p_25 = vec2.len() *1 / 4;
+	{ // calculate median
+		let mut vec2 = vec.clone();
+		vec2.sort();
+		let mid = vec2.len() / 2;
+		let p_75 = vec2.len() *3 / 4;
+		let p_25 = vec2.len() *1 / 4;
 
-	// 	median = vec2[mid];
-	// 	perf_25 = vec2[p_25];
-	// 	perf_75 = vec2[p_75];
-	// 	min = vec2[0];
-	// 	max = vec2[vec.len() - 1];
-  	// }
+		median = vec2[mid];
+		perf_25 = vec2[p_25];
+		perf_75 = vec2[p_75];
+		min = vec2[0];
+		max = vec2[vec.len() - 1];
+  	}
 
-	// { // calculate sample variance
-	// 	let mut diff_sum: u64 = 0;
-    //   	for x in &vec {
-	// 		if x > &avg {
-	// 			diff_sum = diff_sum + ((x-avg)*(x-avg));
-	// 		}
-	// 		else {
-	// 			diff_sum = diff_sum + ((avg - x)*(avg -x));
-	// 		}
-    //   	}
+	{ // calculate sample variance
+		let mut diff_sum: u64 = 0;
+      	for x in &vec {
+			if x > &avg {
+				diff_sum = diff_sum + ((x-avg)*(x-avg));
+			}
+			else {
+				diff_sum = diff_sum + ((avg - x)*(avg -x));
+			}
+      	}
 
-    // 	var = (diff_sum) / (vec.len() as u64 - 1);
-	// }
+    	var = (diff_sum) / (vec.len() as u64 - 1);
+	}
 
-	// { // calculate the standard deviation
-	// 	std_dev = libm::sqrt(var as f64);		
-	// }
+	{ // calculate the standard deviation
+		std_dev = libm::sqrt(var as f64);		
+	}
 
-	// printlninfo!("\n  mean : {}",avg);
-	// printlninfo!("\n  variance  : {}",var);
-	// printlninfo!("\n  standard deviation  : {}",std_dev);
-	// printlninfo!("\n  max  : {}",max);
-	// printlninfo!("\n  p_50 : {}",median);
-	// printlninfo!("\n  p_25 : {}",perf_25);
-	// printlninfo!("\n  p_75 : {}",perf_75);
-	// printlninfo!("\n  min  : {}",min);
-	// printlninfo!("\n");
+	printlninfo!("\n  mean : {}",avg);
+	printlninfo!("\n  variance  : {}",var);
+	printlninfo!("\n  standard deviation  : {}",std_dev);
+	printlninfo!("\n  max  : {}",max);
+	printlninfo!("\n  p_50 : {}",median);
+	printlninfo!("\n  p_25 : {}",perf_25);
+	printlninfo!("\n  p_75 : {}",perf_75);
+	printlninfo!("\n  min  : {}",min);
+	printlninfo!("\n");
 }
