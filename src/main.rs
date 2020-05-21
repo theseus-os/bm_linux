@@ -21,6 +21,7 @@ use std::{thread, time};
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
 use std::sync::{Arc,Mutex};
+use std::os::unix::net::UnixStream;
 
 use hwloc::{Topology, ObjectType, CPUBIND_THREAD, CpuSet};
 use mmap::{MemoryMap,MapOption};
@@ -47,7 +48,8 @@ fn print_usage(prog: &String) {
 	printlninfo!("\n    ctx              : context switch");
 	printlninfo!("\n    spawn            : process creation");
 	printlninfo!("\n    memory_map		 : memory mapping");
-	printlninfo!("\n    ipc 		     : ipc");
+	printlninfo!("\n    ipc_pipe	     : ipc_pipe");
+	printlninfo!("\n    ipc_socket	     : ipc_socket");
 }
 
 
@@ -588,7 +590,7 @@ fn do_memory_map() {
 }
 
 
-fn do_ipc_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<u64, &'static str> {
+fn do_ipc_pipe_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<u64, &'static str> {
 	let start;
 	let end;
 	let intermediate;
@@ -604,13 +606,13 @@ fn do_ipc_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<
     start = Instant::now();
 
 		let child3 = thread::spawn(move || {
-            core_affinity::set_for_current(id3);
+            // core_affinity::set_for_current(id3);
         });
 
         child3.join().expect("oops! the child thread panicked");
 
         let child4 = thread::spawn(move || {
-            core_affinity::set_for_current(id4);
+            // core_affinity::set_for_current(id4);
         });
 
         child4.join().expect("oops! the child thread panicked");
@@ -618,12 +620,12 @@ fn do_ipc_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<
 	intermediate = Instant::now();
 
         let child1 = thread::spawn(move || {
-            core_affinity::set_for_current(id1);
-			let mut val = [22];
+            // core_affinity::set_for_current(id1);
+			let mut val = [0];
 
             for id in 0..ITERATIONS {
             	writer1.write(&val).expect("unable to write to pipe");
-				reader2.read(&mut val).expect("unable to write to pipe");
+				reader2.read(&mut val).expect("unable to read from pipe");
             }
 
             // Sending is a non-blocking operation, the thread will continue
@@ -633,14 +635,12 @@ fn do_ipc_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<
 
 
         let child2 = thread::spawn(move || {
-            core_affinity::set_for_current(id2);
-			let mut val = [32];
+            // core_affinity::set_for_current(id2);
+			let mut val = [0];
 
             for id in 0..ITERATIONS {
-            	let res = reader1.read(&mut val);
-				// println!("reader 1: {}", res.unwrap());
-				let res = writer2.write(&val);
-				// println!("writer 2: {}", res.unwrap());
+            	reader1.read(&mut val).expect("unable to write to pipe");
+				writer2.write(&val).expect("unable to read from pipe");
             }
             // Sending is a non-blocking operation, the thread will continue
             // immediately after sending its message
@@ -656,15 +656,15 @@ fn do_ipc_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<
     let overhead_time = overhead_delta.as_nanos() as u64;
     let delta = end - intermediate - overhead_delta;
 	let delta_time = delta.as_nanos() as u64;
-	let delta_time_avg = delta_time / (ITERATIONS*2) as u64; //*2 for 1 way IPC time
+	let delta_time_avg = delta_time / ITERATIONS as u64; //*2 for 1 way IPC time
 
-    printlninfo!("do_ipc_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
+    printlninfo!("do_ipc_pipe_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
 		th, nr, overhead_time, delta_time, delta_time_avg);
 
 	Ok(delta_time_avg)
 }
 
-fn do_ipc() {
+fn do_ipc_pipe() {
 	let mut tries = 0;
 	let mut max = core::u64::MIN;
 	let mut min = core::u64::MAX;
@@ -675,7 +675,7 @@ fn do_ipc() {
 	core_affinity::set_for_current(core_id);
 	
 	for i in 0..TRIES {
-		let lat = do_ipc_inner(i+1, TRIES, core_id).expect("Error in IPC inner()");
+		let lat = do_ipc_pipe_inner(i+1, TRIES, core_id).expect("Error in IPC inner()");
 		vec.push(lat);
 
 		tries += lat;
@@ -691,10 +691,119 @@ fn do_ipc() {
 		printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
 	}
 
-	printlninfo!("IPC result: {} cycles", lat);
+	printlninfo!("IPC PIPE Round Trip Time: {} ns", lat);
 	print_stats(vec);
 }
 
+
+fn do_ipc_socket_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<u64, &'static str> {
+	let start;
+	let end;
+	let intermediate;
+
+	// Create socket pair
+    let (mut sock1, mut sock2) = match UnixStream::pair() {
+        Err(_) => return Err("Could not create socket"),
+        Ok((s1, s2)) => (s1,s2),
+    };
+
+
+    let id3 = core_id.clone();
+    let id4 = id3.clone();
+    let id2 = id3.clone();
+    let id1 = id3.clone();
+
+    start = Instant::now();
+
+		let child3 = thread::spawn(move || {
+            // core_affinity::set_for_current(id3);
+        });
+
+        child3.join().expect("oops! the child thread panicked");
+
+        let child4 = thread::spawn(move || {
+            // core_affinity::set_for_current(id4);
+        });
+
+        child4.join().expect("oops! the child thread panicked");
+
+	intermediate = Instant::now();
+
+        let child1 = thread::spawn(move || {
+            // core_affinity::set_for_current(id1);
+			let mut val = [22];
+
+            for id in 0..ITERATIONS {
+            	sock1.write(&val).expect("unable to write to socket");
+				sock1.read(&mut val).expect("unable to read from socket");
+            }
+
+            // Sending is a non-blocking operation, the thread will continue
+            // immediately after sending its message
+            
+        });
+
+
+        let child2 = thread::spawn(move || {
+            // core_affinity::set_for_current(id2);
+			let mut val = [32];
+
+            for id in 0..ITERATIONS {
+            	let res = sock2.read(&mut val).expect("unable to write to socket");
+				let res = sock2.write(&val).expect("unable to read from socket");
+            }
+            // Sending is a non-blocking operation, the thread will continue
+            // immediately after sending its message
+        });
+
+
+    child1.join().expect("oops! the child thread panicked");
+    child2.join().expect("oops! the child thread panicked");
+
+	end = Instant::now();
+
+    let overhead_delta = intermediate - start;
+    let overhead_time = overhead_delta.as_nanos() as u64;
+    let delta = end - intermediate - overhead_delta;
+	let delta_time = delta.as_nanos() as u64;
+	let delta_time_avg = delta_time / ITERATIONS as u64; 
+
+    printlninfo!("do_ipc_socket_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
+		th, nr, overhead_time, delta_time, delta_time_avg);
+
+	Ok(delta_time_avg)
+}
+
+fn do_ipc_socket() {
+	let mut tries = 0;
+	let mut max = core::u64::MIN;
+	let mut min = core::u64::MAX;
+	let mut vec = Vec::with_capacity(TRIES);
+
+	let core_ids = core_affinity::get_core_ids().unwrap();
+    let core_id = core_ids[2];
+	core_affinity::set_for_current(core_id);
+	
+	for i in 0..TRIES {
+		let lat = do_ipc_socket_inner(i+1, TRIES, core_id).expect("Error in IPC inner()");
+		vec.push(lat);
+
+		tries += lat;
+		if lat > max {max = lat;}
+		if lat < min {min = lat;}
+	}
+
+
+	let lat = tries / TRIES as u64;
+	// We expect the maximum and minimum to be within 10*THRESHOLD_ERROR_RATIO % of the mean value
+	let err = (lat * 10 * THRESHOLD_ERROR_RATIO) / 100;
+	if 	max - lat > err || lat - min > err {
+		printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
+	}
+
+	printlninfo!("IPC SOCKET Round Trip Time: {} ns", lat);
+	print_stats(vec);
+}
 
 fn print_header() {
 	printlninfo!("========================================");
@@ -738,10 +847,12 @@ fn main() {
 		"memory_map" => {
     		do_memory_map();
     	}
-		"ipc" => {
-    		do_ipc();
+		"ipc_pipe" => {
+    		do_ipc_pipe();
     	}
-
+		"ipc_socket" => {
+    		do_ipc_socket();
+    	}
     	_ => {printlninfo!("Unknown command: {}", env::args().nth(1).unwrap());}
     }
 }
