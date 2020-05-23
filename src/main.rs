@@ -4,7 +4,6 @@ extern crate libc;
 extern crate hwloc;
 extern crate core_affinity;
 extern crate perfcnt;
-extern crate memmap;
 extern crate libm;
 extern crate os_pipe;
 extern crate mmap;
@@ -22,20 +21,20 @@ use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
 use std::sync::{Arc,Mutex};
 use std::os::unix::net::UnixStream;
-
+use std::ffi::{CStr, CString};
 use hwloc::{Topology, ObjectType, CPUBIND_THREAD, CpuSet};
 use mmap::{MemoryMap,MapOption};
-use libc::{c_void, size_t, c_int};
+use libc::{c_void, size_t, c_int, c_char};
 
 use perfcnt::{PerfCounter, AbstractPerfCounter};
 use perfcnt::linux::HardwareEventType as Hardware;
 use perfcnt::linux::PerfCounterBuilderLinux as Builder;
 
-use memmap::MmapOptions;
-
 use os_pipe::pipe;
 
 use hashbrown::HashMap;
+
+use libc::{open, close, mmap, munmap};
 
 #[macro_use]
 mod timing;
@@ -44,12 +43,13 @@ use timing::*;
 fn print_usage(prog: &String) {
 	printlninfo!("\nUsage: {} cmd", prog);
 	printlninfo!("\n  available cmds:");
-	printlninfo!("\n    null             : null syscall");
-	printlninfo!("\n    ctx              : context switch");
-	printlninfo!("\n    spawn            : process creation");
-	printlninfo!("\n    memory_map		 : memory mapping");
-	printlninfo!("\n    ipc_pipe	     : ipc_pipe");
-	printlninfo!("\n    ipc_socket	     : ipc_socket");
+	printlninfo!("\n    null             		: null syscall");
+	printlninfo!("\n    ctx              		: context switch");
+	printlninfo!("\n    spawn            		: process creation");
+	printlninfo!("\n    memory_map		 		: memory mapping");
+	printlninfo!("\n    memory_map_lmbench		: memory mapping matching the lmbench version");
+	printlninfo!("\n    ipc_pipe	     		: ipc_pipe");
+	printlninfo!("\n    ipc_socket	     		: ipc_socket");
 }
 
 
@@ -498,10 +498,22 @@ fn do_memory_map_inner_libc(overhead_ns: u64, th: usize, nr: usize) -> Result<u6
 	let end;
 
 	let len: libc::size_t = 4096;
-	let prot: libc::c_int = libc::PROT_WRITE | libc::PROT_READ | libc::PROT_EXEC;
-	let flags: libc::c_int = libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_POPULATE;
-	let fd: libc::c_int = -1;
+	let prot: libc::c_int = libc::PROT_WRITE | libc::PROT_READ;
+	let flags: libc::c_int = libc::MAP_SHARED;
 	let offset: libc::off_t = 0;
+	let file_name = CString::new("test_file").expect("CString::new failed");
+
+	let size: isize = 4096;
+	const PSIZE: isize = 16<<10;
+	const N: isize = 10;
+	let c: u8 = size as u8 & 0xff;
+
+
+	let fd: libc::c_int = unsafe{open(file_name.as_c_str().as_ptr(), libc::O_RDWR | libc::O_CREAT)};
+
+	if fd < 0 {
+		return Err("Could not create file");
+	}
 
 	start = Instant::now();
 
@@ -509,13 +521,32 @@ fn do_memory_map_inner_libc(overhead_ns: u64, th: usize, nr: usize) -> Result<u6
 		let mut addr: *mut u8 = 0 as *mut u8;
 
 		unsafe{ 
-			let addr = libc::mmap(0 as *mut libc::c_void, len, prot, flags, fd, offset)  as *mut u8; 
-			// unsafe {println!("addr: {:#X}, value: {}", addr as usize, *addr); }
-			libc::munmap(addr as *mut libc::c_void, len);
+			let addr = libc::mmap(0 as *mut libc::c_void, len, prot, flags, fd, offset) as *mut u8; 
+			if (addr as usize) < 0 {
+				return Err("mmap failed");
+			}
+
+			let end = addr.offset(size / N);
+			let mut p = addr;
+			while p < end {
+				unsafe{ p.write(0xff) };
+				p = p.offset(PSIZE);
+			}
+
+			let ret = libc::munmap(addr as *mut libc::c_void, len);
+			if ret < 0 {
+				return Err("munmap failed");
+			}
 		}
 	}
 
     end = Instant::now();
+
+	let ret = unsafe{close(fd)};
+
+	if ret < 0 {
+		return Err("Could not close file");
+	}
 
     let delta = end - start;
 	let delta_time = delta.as_nanos() as u64 - overhead_ns;
@@ -526,6 +557,35 @@ fn do_memory_map_inner_libc(overhead_ns: u64, th: usize, nr: usize) -> Result<u6
 
 	Ok(delta_time_avg)
 }
+
+fn do_memory_map_lmbench() {
+	let mut vec = Vec::with_capacity(TRIES);
+	let mut tries: u64 = 0;
+	let mut max: u64 = core::u64::MIN;
+	let mut min: u64 = core::u64::MAX;
+	let overhead = timing_overhead();
+
+	for i in 0..TRIES {
+		let lat = do_memory_map_inner_libc(overhead, i+1, TRIES).expect("memory map bm failed.");
+		
+		vec.push(lat);
+		tries += lat;
+		
+		if lat > max {max = lat;}
+		if lat < min {min = lat;}
+	}
+
+	print_stats(vec);
+	let lat = tries / TRIES as u64;
+	// We expect the maximum and minimum to be within 10*THRESHOLD_ERROR_RATIO % of the mean value
+	let err = (lat * 10 * THRESHOLD_ERROR_RATIO) / 100;
+	if max - lat > err || lat - min > err {
+		printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
+	}
+
+	printlninfo!("MEMORY MAP LMBENCH test: {:.2} ns", lat);
+}
+
 
 fn do_memory_map_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static str> {
     let size_in_bytes = 4096;
@@ -846,6 +906,9 @@ fn main() {
     	}
 		"memory_map" => {
     		do_memory_map();
+    	}
+		"memory_map_lmbench" => {
+    		do_memory_map_lmbench();
     	}
 		"ipc_pipe" => {
     		do_ipc_pipe();
