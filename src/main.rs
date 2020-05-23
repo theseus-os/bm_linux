@@ -34,7 +34,7 @@ use os_pipe::pipe;
 
 use hashbrown::HashMap;
 
-use libc::{open, close, mmap, munmap};
+use libc::{open, close, mmap, munmap, fallocate};
 
 #[macro_use]
 mod timing;
@@ -514,6 +514,10 @@ fn do_memory_map_inner_libc(overhead_ns: u64, th: usize, nr: usize) -> Result<u6
 	if fd < 0 {
 		return Err("Could not create file");
 	}
+	let ret = unsafe{ fallocate(fd, 0, 0, len as i64) };
+	if ret < 0 {
+		return Err("could not allocate file");
+	}
 
 	start = Instant::now();
 
@@ -529,7 +533,7 @@ fn do_memory_map_inner_libc(overhead_ns: u64, th: usize, nr: usize) -> Result<u6
 			let end = addr.offset(size / N);
 			let mut p = addr;
 			while p < end {
-				unsafe{ p.write(0xff) };
+				unsafe{ p.write(c) };
 				p = p.offset(PSIZE);
 			}
 
