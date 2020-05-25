@@ -45,6 +45,7 @@ fn print_usage(prog: &String) {
 	printlninfo!("\n  available cmds:");
 	printlninfo!("\n    null             		: null syscall");
 	printlninfo!("\n    ctx              		: context switch");
+	printlninfo!("\n    ctx_yield            	: context switch where tasks yield to each other");
 	printlninfo!("\n    spawn            		: process creation");
 	printlninfo!("\n    memory_map		 		: memory mapping");
 	printlninfo!("\n    memory_map_lmbench		: memory mapping matching the lmbench version");
@@ -530,12 +531,17 @@ fn do_memory_map_inner_libc(overhead_ns: u64, th: usize, nr: usize) -> Result<u6
 				return Err("mmap failed");
 			}
 
-			let end = addr.offset(size / N);
-			let mut p = addr;
-			while p < end {
-				unsafe{ p.write(c) };
-				p = p.offset(PSIZE);
-			}
+			// for a 4 KiB mapping, this ends up writing to only the starting address
+			// so we remove the loop
+
+			// let end = addr.offset(size / N);
+			// let mut p = addr;
+			// while p < end {
+			// 	unsafe{ p.write(c) };
+			// 	p = p.offset(PSIZE);
+			// }
+
+			unsafe{ *addr = 0xFF; }
 
 			let ret = libc::munmap(addr as *mut libc::c_void, len);
 			if ret < 0 {
@@ -609,6 +615,9 @@ fn do_memory_map_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'
 				return Err("Could not map page");
 			}
 		};
+		// Write to the first byte like lmbench
+		unsafe{ *(mp.data())= 0xFF; }
+
 		drop(mp);
 	}
     end = Instant::now();
