@@ -1,5 +1,6 @@
 #![feature(asm)]
 #![feature(duration_as_u128)]
+
 extern crate libc;
 extern crate hwloc;
 extern crate core_affinity;
@@ -54,7 +55,20 @@ fn print_usage(prog: &String) {
 }
 
 
-fn getpid() -> u32 { process::id() }
+// fn getpid() -> u32 { process::id() }
+
+fn getpid() -> u32 {
+	let pid: u32;
+	let pid_syscall_no: u32 = 39;
+	unsafe {
+		asm!("syscall;"
+			 : "=r" ( pid )        
+			 : "r" ( pid_syscall_no )        
+			 :          
+		     );
+    	}
+	pid
+}
 
 static mut abc: u32 = 0;
 
@@ -672,28 +686,20 @@ fn do_ipc_pipe_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Re
 	let (mut reader2, mut writer2) = pipe().map_err(|_e| "Unable to create pipe")?;
 
     let id3 = core_id.clone();
-    let id4 = id3.clone();
-    let id2 = id3.clone();
     let id1 = id3.clone();
 
     start = Instant::now();
 
 		let child3 = thread::spawn(move || {
-            // core_affinity::set_for_current(id3);
+            core_affinity::set_for_current(id3);
         });
 
         child3.join().expect("oops! the child thread panicked");
 
-        let child4 = thread::spawn(move || {
-            // core_affinity::set_for_current(id4);
-        });
-
-        child4.join().expect("oops! the child thread panicked");
-
 	intermediate = Instant::now();
 
         let child1 = thread::spawn(move || {
-            // core_affinity::set_for_current(id1);
+            core_affinity::set_for_current(id1);
 			let mut val = [0];
 
             for id in 0..ITERATIONS {
@@ -707,21 +713,17 @@ fn do_ipc_pipe_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Re
         });
 
 
-        let child2 = thread::spawn(move || {
-            // core_affinity::set_for_current(id2);
-			let mut val = [0];
+		let mut val = [0];
 
-            for id in 0..ITERATIONS {
-            	reader1.read(&mut val).expect("unable to write to pipe");
-				writer2.write(&val).expect("unable to read from pipe");
-            }
-            // Sending is a non-blocking operation, the thread will continue
-            // immediately after sending its message
-        });
+		for id in 0..ITERATIONS {
+			reader1.read(&mut val).expect("unable to write to pipe");
+			writer2.write(&val).expect("unable to read from pipe");
+		}
+		// Sending is a non-blocking operation, the thread will continue
+		// immediately after sending its message
 
 
     child1.join().expect("oops! the child thread panicked");
-    child2.join().expect("oops! the child thread panicked");
 
 	end = Instant::now();
 
