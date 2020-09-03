@@ -17,7 +17,7 @@ macro_rules! printlnwarn {
 }
 
 // overhead is TIME
-pub fn timing_overhead_inner(th: usize, nr: usize) -> u64 {
+pub fn timing_overhead_inner(_th: usize, _nr: usize) -> u64 {
 	let mut temp;
 	let start;
 	let end;
@@ -34,8 +34,8 @@ pub fn timing_overhead_inner(th: usize, nr: usize) -> u64 {
 	let delta_time = delta.as_nanos() as u64;
 	let delta_time_avg = delta_time / ITERATIONS as u64;
 
-	printlninfo!("t_overhead_inner ({}/{}): {} total -> {:.2} avg_ns (ignore: {})", 
-		th, nr, delta_time, delta_time_avg, temp.elapsed().as_nanos());
+	// printlninfo!("t_overhead_inner ({}/{}): {} total -> {:.2} avg_ns (ignore: {})", 
+	// 	th, nr, delta_time, delta_time_avg, temp.elapsed().as_nanos());
 
 	delta_time_avg
 }
@@ -60,12 +60,12 @@ pub fn timing_overhead() -> u64 {
 		printlnwarn!("timing_overhead diff is too big: {:.2} ({:.2} - {:.2}) ns", max-min, max, min);
 	}
 
-	printlninfo!("Timing overhead: {} ns\n\n", overhead);
+	// printlninfo!("Timing overhead: {} ns\n\n", overhead);
 
 	overhead
 }
 
-pub fn timing_overhead_inner_cycles(th: usize, nr: usize, counter: &mut PerfCounter) -> u64 {
+pub fn timing_overhead_inner_cycles(_th: usize, _nr: usize, counter: &mut PerfCounter) -> u64 {
 	counter.reset();
 	counter.start();
 

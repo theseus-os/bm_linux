@@ -1,5 +1,4 @@
 #![feature(asm)]
-#![feature(duration_as_u128)]
 
 extern crate libc;
 extern crate hwloc;
@@ -12,30 +11,20 @@ extern crate page_size;
 extern crate hashbrown;
 
 use std::env;
-use std::fs::{self, File};
 use std::time::Instant;
 use std::process::{self, Command, Stdio};
-use std::io::{Read, Write, SeekFrom, Seek};
-use std::path::Path;
-use std::{thread, time};
+use std::io::{Read, Write};
+// use std::path::Path;
+use std::{thread};
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
-use std::sync::{Arc,Mutex};
 use std::os::unix::net::UnixStream;
-use std::ffi::{CStr, CString};
-use hwloc::{Topology, ObjectType, CPUBIND_THREAD, CpuSet};
+use std::ffi::{CString};
+use hwloc::{Topology, ObjectType, CpuSet};
 use mmap::{MemoryMap,MapOption};
-use libc::{c_void, size_t, c_int, c_char};
-
-use perfcnt::{PerfCounter, AbstractPerfCounter};
-use perfcnt::linux::HardwareEventType as Hardware;
-use perfcnt::linux::PerfCounterBuilderLinux as Builder;
-
 use os_pipe::pipe;
-
 use hashbrown::HashMap;
-
-use libc::{open, close, mmap, munmap, fallocate};
+use libc::{open, close, fallocate};
 
 #[macro_use]
 mod timing;
@@ -52,30 +41,31 @@ fn print_usage(prog: &String) {
 	printlninfo!("\n    memory_map_lmbench		: memory mapping matching the lmbench version");
 	printlninfo!("\n    ipc_pipe	     		: ipc_pipe");
 	printlninfo!("\n    ipc_socket	     		: ipc_socket");
+	printlninfo!("\n    all			     		: run all the benchmarks which are in the Theseus OSDI paper");
 }
 
 
-// fn getpid() -> u32 { process::id() }
+fn getpid() -> u32 { process::id() }
 
-fn getpid() -> u32 {
-	let pid: u32;
-	let pid_syscall_no: u32 = 39;
-	unsafe {
-		asm!("syscall;"
-			 : "=r" ( pid )        
-			 : "r" ( pid_syscall_no )        
-			 :          
-		     );
-    	}
-	pid
-}
+// fn getpid() -> u32 {
+// 	let pid: u32;
+// 	let pid_syscall_no: u32 = 39;
+// 	unsafe {
+// 		asm!("syscall;"
+// 			 : "=r" ( pid )        
+// 			 : "r" ( pid_syscall_no )        
+// 			 :          
+// 		     );
+//     	}
+// 	pid
+// }
 
-static mut abc: u32 = 0;
+static mut ABC: u32 = 0;
 
 #[no_mangle]
 fn empty_fn(n: u32)
 { 
-	unsafe{abc = abc + n};
+	unsafe{ABC = ABC + n};
 }
 
 fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
@@ -86,10 +76,11 @@ fn cpuset_for_core(topology: &Topology, idx: usize) -> CpuSet {
     }
 }
 
-fn do_null_inner(overhead_ns: u64, th: usize, nr: usize) -> u64 {
+
+fn do_null_inner(overhead_ns: u64, _th: usize, _nr: usize) -> u64 {
 	let start;
 	let end;
-	let mut pid = 0;
+	let mut pid;
 
 	start = Instant::now();
 	for _ in 0..ITERATIONS {
@@ -108,8 +99,8 @@ fn do_null_inner(overhead_ns: u64, th: usize, nr: usize) -> u64 {
 
 	let delta_time_avg = delta_time as u64 / ITERATIONS as u64;
 
-	printlninfo!("null_test_inner ({}/{}): {} total_ns -> {} avg_ns (ignore: {})", 
-		th, nr, delta_time, delta_time_avg, pid);
+	// printlninfo!("null_test_inner ({}/{}): {} total_ns -> {} avg_ns (ignore: {})", 
+	// 	th, nr, delta_time, delta_time_avg, pid);
 
 	delta_time_avg
 }
@@ -138,11 +129,13 @@ fn do_null() {
 		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
 	}
 
-	printlninfo!("NULL test: {:.2} ns", lat);
-	print_stats(vec);
+	// printlninfo!("NULL test: {:.2} ns", lat);
+	// print_stats(vec);
+	let (mean,std_dev) = find_mean_and_std_dev(vec);
+	println!("null syscall			{:.2}			{:.2}", mean/1000.0, std_dev/1000.0)
 }
 
-fn do_spawn_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static str> {
+fn do_spawn_inner(overhead_ns: u64, _th: usize, _nr: usize) -> Result<u64, &'static str> {
     let start;
 	let end;
 
@@ -162,8 +155,8 @@ fn do_spawn_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'stati
 	let delta_time = delta.as_nanos() as u64 - overhead_ns;
 	let delta_time_avg = delta_time / ITERATIONS as u64;
 
-    printlninfo!("spawn_test_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
-		th, nr, delta_time, delta_time_avg);
+    // printlninfo!("spawn_test_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
+	// 	th, nr, delta_time, delta_time_avg);
 
 	Ok(delta_time_avg)
 }
@@ -233,12 +226,14 @@ fn do_spawn(rust_only: bool) {
 		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
 	}
 
-	printlninfo!("SPAWN result: {:.2} ns", lat);
-	print_stats(vec);
+	// printlninfo!("SPAWN result: {:.2} ns", lat);
+	// print_stats(vec);
+	let (mean,std_dev) = find_mean_and_std_dev(vec);
+	println!("create process			{:.2}		{:.2}", mean/1000.0, std_dev/1000.0)
 }
 
 
-fn do_ctx_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static str> {
+fn do_ctx_inner(_overhead_ns: u64, _th: usize, _nr: usize) -> Result<u64, &'static str> {
     let start;
     let intermediate;
 	let end;
@@ -250,7 +245,8 @@ fn do_ctx_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static 
 
     // println!("Found {} cores.", num_cores);
     let core_ids = core_affinity::get_core_ids().unwrap();
-    let id3 = core_ids[2];
+	let id = core_ids.len() - 1;
+    let id3 = core_ids[id];
     let id4 = id3.clone();
     let id2 = id3.clone();
     let id1 = id3.clone();
@@ -327,9 +323,9 @@ fn do_ctx_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static 
         let child2 = thread::spawn(move || {
             // The thread takes ownership over `thread_tx`
             // Each thread queues a message in the channel
-            core_affinity::set_for_current(id1);
+            core_affinity::set_for_current(id2);
 
-            for id in 0..ITERATIONS {
+            for _ in 0..ITERATIONS {
             	// println!("ready to receive");
             	let id = rx1.recv().unwrap();
             	tx2.send(id as i32).unwrap();
@@ -346,13 +342,13 @@ fn do_ctx_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static 
     end = Instant::now();
 
     let overhead_delta = intermediate - start;
-    let overhead_time = overhead_delta.as_nanos() as u64;
+    // let overhead_time = overhead_delta.as_nanos() as u64;
     let delta = end - intermediate - overhead_delta;
 	let delta_time = delta.as_nanos() as u64;
 	let delta_time_avg = delta_time / (ITERATIONS*2) as u64;
 
-    printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
-		th, nr, overhead_time, delta_time, delta_time_avg);
+    // printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
+	// 	th, nr, overhead_time, delta_time, delta_time_avg);
 
 	Ok(delta_time_avg)
 }
@@ -370,6 +366,8 @@ fn do_ctx() {
 		let lat = do_ctx_inner(overhead_ns, i+1, TRIES).expect("Error in spawn inner()");
 
 		tries += lat;
+		vec.push(lat);
+
 		if lat > max {max = lat;}
 		if lat < min {min = lat;}
 	}
@@ -385,18 +383,14 @@ fn do_ctx() {
 	print_stats(vec);
 }
 
-fn do_ctx_yield_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static str> {
+fn do_ctx_yield_inner(_overhead_ns: u64, _th: usize, _nr: usize) -> Result<u64, &'static str> {
     let start;
     let intermediate;
 	let end;
 
-	let (tx1, rx1): (Sender<i32>, Receiver<i32>) = mpsc::channel();
-    let (tx2, rx2): (Sender<i32>, Receiver<i32>) = mpsc::channel();
-    let (tx3, rx3): (Sender<i32>, Receiver<i32>) = mpsc::channel();
-    let (tx4, rx4): (Sender<i32>, Receiver<i32>) = mpsc::channel();
-
     let core_ids = core_affinity::get_core_ids().unwrap();
-    let id3 = core_ids[2];
+	let id = core_ids.len() - 1;
+    let id3 = core_ids[id];
     let id4 = id3.clone();
     let id2 = id3.clone();
     let id1 = id3.clone();
@@ -436,7 +430,7 @@ fn do_ctx_yield_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'s
             // Each thread queues a message in the channel
             core_affinity::set_for_current(id1);
 
-            for id in 0..ITERATIONS {
+            for _ in 0..ITERATIONS {
             	thread::yield_now();
             }
 
@@ -453,7 +447,7 @@ fn do_ctx_yield_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'s
             // Each thread queues a message in the channel
             core_affinity::set_for_current(id2);
 
-            for id in 0..ITERATIONS {
+            for _ in 0..ITERATIONS {
             	thread::yield_now();
             }
             // Sending is a non-blocking operation, the thread will continue
@@ -467,13 +461,13 @@ fn do_ctx_yield_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'s
     end = Instant::now();
 
     let overhead_delta = intermediate - start;
-    let overhead_time = overhead_delta.as_nanos() as u64;
+    // let overhead_time = overhead_delta.as_nanos() as u64;
     let delta = end - intermediate - overhead_delta;
 	let delta_time = delta.as_nanos() as u64;
 	let delta_time_avg = delta_time / (ITERATIONS*2) as u64;
 
-    printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
-		th, nr, overhead_time, delta_time, delta_time_avg);
+    // printlninfo!("do_ctx_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
+	// 	th, nr, overhead_time, delta_time, delta_time_avg);
 
 	Ok(delta_time_avg)
 }
@@ -504,8 +498,10 @@ fn do_ctx_yield() {
 		printlnwarn!("benchmark error is too big: (avg {:.2}, max {:.2},  min {:.2})", lat, max, min);
 	}
 
-	printlninfo!("CTX result: {:.2} ns", lat);
-	print_stats(vec);
+	// printlninfo!("CTX result: {:.2} ns", lat);
+	// print_stats(vec);
+	let (mean,std_dev) = find_mean_and_std_dev(vec);
+	println!("context switch			{:.2}			{:.2}", mean/1000.0, std_dev/1000.0)
 }
 
 fn do_memory_map_inner_libc(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static str> {
@@ -517,11 +513,11 @@ fn do_memory_map_inner_libc(overhead_ns: u64, th: usize, nr: usize) -> Result<u6
 	let flags: libc::c_int = libc::MAP_SHARED;
 	let offset: libc::off_t = 0;
 	let file_name = CString::new("test_file").expect("CString::new failed");
-
+	
 	let size: isize = 4096;
 	const PSIZE: isize = 16<<10;
 	const N: isize = 10;
-	let c: u8 = size as u8 & 0xff;
+	// let c: u8 = size as u8 & 0xff;
 
 
 	let fd: libc::c_int = unsafe{open(file_name.as_c_str().as_ptr(), libc::O_RDWR | libc::O_CREAT)};
@@ -537,11 +533,9 @@ fn do_memory_map_inner_libc(overhead_ns: u64, th: usize, nr: usize) -> Result<u6
 	start = Instant::now();
 
 	for _ in 0..ITERATIONS {
-		let mut addr: *mut u8 = 0 as *mut u8;
-
 		unsafe{ 
 			let addr = libc::mmap(0 as *mut libc::c_void, len, prot, flags, fd, offset) as *mut u8; 
-			if (addr as usize) < 0 {
+			if (addr as isize) < 0 {
 				return Err("mmap failed");
 			}
 
@@ -555,7 +549,7 @@ fn do_memory_map_inner_libc(overhead_ns: u64, th: usize, nr: usize) -> Result<u6
 			// 	p = p.offset(PSIZE);
 			// }
 
-			unsafe{ *addr = 0xFF; }
+			*addr = 0xFF;
 
 			let ret = libc::munmap(addr as *mut libc::c_void, len);
 			if ret < 0 {
@@ -611,12 +605,12 @@ fn do_memory_map_lmbench() {
 }
 
 
-fn do_memory_map_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'static str> {
+fn do_memory_map_inner(overhead_ns: u64, _th: usize, _nr: usize) -> Result<u64, &'static str> {
     let size_in_bytes = 4096;
 	let start;
 	let end;
 
-	let mut mmap_options = [MapOption::MapWritable, MapOption::MapNonStandardFlags(libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_POPULATE)];
+	let mmap_options = [MapOption::MapWritable, MapOption::MapNonStandardFlags(libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_POPULATE)];
 
 	start = Instant::now();
 
@@ -640,8 +634,8 @@ fn do_memory_map_inner(overhead_ns: u64, th: usize, nr: usize) -> Result<u64, &'
 	let delta_time = delta.as_nanos() as u64 - overhead_ns;
 	let delta_time_avg = delta_time / ITERATIONS as u64;
 
-    printlninfo!("memory_map_test_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
-		th, nr, delta_time, delta_time_avg);
+    // printlninfo!("memory_map_test_inner ({}/{}): : {:.2} total_time -> {:.2} avg_ns", 
+	// 	th, nr, delta_time, delta_time_avg);
 
 	Ok(delta_time_avg)
 
@@ -665,7 +659,7 @@ fn do_memory_map() {
 		if lat < min {min = lat;}
 	}
 
-	print_stats(vec);
+	// print_stats(vec);
 	let lat = tries / TRIES as u64;
 	// We expect the maximum and minimum to be within 10*THRESHOLD_ERROR_RATIO % of the mean value
 	let err = (lat * 10 * THRESHOLD_ERROR_RATIO) / 100;
@@ -673,11 +667,13 @@ fn do_memory_map() {
 		printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
 	}
 
-	printlninfo!("MEMORY MAP test: {:.2} ns", lat);
+	// printlninfo!("MEMORY MAP test: {:.2} ns", lat);
+	let (mean,std_dev) = find_mean_and_std_dev(vec);
+	println!("memory map			{:.2}			{:.2}", mean/1000.0, std_dev/1000.0)
 }
 
 
-fn do_ipc_pipe_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<u64, &'static str> {
+fn do_ipc_pipe_inner(_th: usize, _nr: usize, core_id: core_affinity::CoreId) -> Result<u64, &'static str> {
 	let start;
 	let end;
 	let intermediate;
@@ -702,7 +698,7 @@ fn do_ipc_pipe_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Re
             core_affinity::set_for_current(id1);
 			let mut val = [0];
 
-            for id in 0..ITERATIONS {
+            for _ in 0..ITERATIONS {
             	writer1.write(&val).expect("unable to write to pipe");
 				reader2.read(&mut val).expect("unable to read from pipe");
             }
@@ -715,7 +711,7 @@ fn do_ipc_pipe_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Re
 
 		let mut val = [0];
 
-		for id in 0..ITERATIONS {
+		for _ in 0..ITERATIONS {
 			reader1.read(&mut val).expect("unable to write to pipe");
 			writer2.write(&val).expect("unable to read from pipe");
 		}
@@ -728,13 +724,13 @@ fn do_ipc_pipe_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Re
 	end = Instant::now();
 
     let overhead_delta = intermediate - start;
-    let overhead_time = overhead_delta.as_nanos() as u64;
+    // let overhead_time = overhead_delta.as_nanos() as u64;
     let delta = end - intermediate - overhead_delta;
 	let delta_time = delta.as_nanos() as u64;
 	let delta_time_avg = delta_time / ITERATIONS as u64; //*2 for 1 way IPC time
 
-    printlninfo!("do_ipc_pipe_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
-		th, nr, overhead_time, delta_time, delta_time_avg);
+    // printlninfo!("do_ipc_pipe_inner ({}/{}): : overhead {:.2}, {:.2} total_time -> {:.2} avg_ns", 
+	// 	th, nr, overhead_time, delta_time, delta_time_avg);
 
 	Ok(delta_time_avg)
 }
@@ -746,7 +742,8 @@ fn do_ipc_pipe() {
 	let mut vec = Vec::with_capacity(TRIES);
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
-    let core_id = core_ids[2];
+	let id = core_ids.len() - 1;
+    let core_id = core_ids[id];
 	core_affinity::set_for_current(core_id);
 	
 	for i in 0..TRIES {
@@ -766,12 +763,15 @@ fn do_ipc_pipe() {
 		printlnwarn!("benchmark error is too big: (avg {}, max {},  min {})", lat, max, min);
 	}
 
-	printlninfo!("IPC PIPE Round Trip Time: {} ns", lat);
-	print_stats(vec);
+	// printlninfo!("IPC PIPE Round Trip Time: {} ns", lat);
+	// print_stats(vec);
+
+	let (mean,std_dev) = find_mean_and_std_dev(vec);
+	println!("IPC				{:.2}			{:.2}", mean/1000.0, std_dev/1000.0)
 }
 
 
-fn do_ipc_socket_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> Result<u64, &'static str> {
+fn do_ipc_socket_inner(th: usize, nr: usize, _core_id: core_affinity::CoreId) -> Result<u64, &'static str> {
 	let start;
 	let end;
 	let intermediate;
@@ -783,10 +783,10 @@ fn do_ipc_socket_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> 
     };
 
 
-    let id3 = core_id.clone();
-    let id4 = id3.clone();
-    let id2 = id3.clone();
-    let id1 = id3.clone();
+    // let id3 = core_id.clone();
+    // let id4 = id3.clone();
+    // let id2 = id3.clone();
+    // let id1 = id3.clone();
 
     start = Instant::now();
 
@@ -808,7 +808,7 @@ fn do_ipc_socket_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> 
             // core_affinity::set_for_current(id1);
 			let mut val = [22];
 
-            for id in 0..ITERATIONS {
+            for _ in 0..ITERATIONS {
             	sock1.write(&val).expect("unable to write to socket");
 				sock1.read(&mut val).expect("unable to read from socket");
             }
@@ -823,9 +823,9 @@ fn do_ipc_socket_inner(th: usize, nr: usize, core_id: core_affinity::CoreId) -> 
             // core_affinity::set_for_current(id2);
 			let mut val = [32];
 
-            for id in 0..ITERATIONS {
-            	let res = sock2.read(&mut val).expect("unable to write to socket");
-				let res = sock2.write(&val).expect("unable to read from socket");
+            for _ in 0..ITERATIONS {
+            	sock2.read(&mut val).expect("unable to write to socket");
+				sock2.write(&val).expect("unable to read from socket");
             }
             // Sending is a non-blocking operation, the thread will continue
             // immediately after sending its message
@@ -856,7 +856,8 @@ fn do_ipc_socket() {
 	let mut vec = Vec::with_capacity(TRIES);
 
 	let core_ids = core_affinity::get_core_ids().unwrap();
-    let core_id = core_ids[2];
+	let id = core_ids.len() - 1;
+    let core_id = core_ids[id];
 	core_affinity::set_for_current(core_id);
 	
 	for i in 0..TRIES {
@@ -898,10 +899,10 @@ fn main() {
     }
 
     // don't need to check rq
-    let path = env::current_dir().unwrap();
-    printlninfo!("The current directory is {}", path.display());
+    // let path = env::current_dir().unwrap();
+    // printlninfo!("The current directory is {}", path.display());
 
-    print_header();
+    // print_header();
 
     match env::args().nth(1).unwrap().as_str() {
     	"null" => {
@@ -931,6 +932,17 @@ fn main() {
 		"ipc_socket" => {
     		do_ipc_socket();
     	}
+		"all" => {
+			println!("Results for lmbench benchmarks, as seen in Table");
+			println!("");
+			println!("Benchmark			Mean (us)		Std Dev (us)");
+			println!("------------------------------------------------------------------------------");
+    		do_null();
+    		do_ctx_yield();
+    		do_spawn(true /*rust only*/);
+    		do_memory_map();
+    		do_ipc_pipe();
+		}
     	_ => {printlninfo!("Unknown command: {}", env::args().nth(1).unwrap());}
     }
 }
@@ -1005,4 +1017,39 @@ fn print_stats(vec: Vec<u64>) {
 	printlninfo!("\n  standard deviation  : {}",std_dev);
 
 	printlninfo!("\n");
+}
+
+fn find_mean_and_std_dev(vec: Vec<u64>) -> (f64,f64) {
+  	let mean;
+	let var;
+    let std_dev;
+
+	if vec.is_empty() {
+		return (0.0, 0.0);
+	}
+
+	let len = vec.len();
+
+  	{ // calculate average
+		let sum: u64 = vec.iter().sum();
+		mean = sum as f64 / len as f64;
+  	}
+
+	{ // calculate sample variance
+		let mut diff_sum: f64 = 0.0;
+      	for val in &vec {
+			let x = *val as f64; 
+			if x > mean {
+				diff_sum = diff_sum + ((x - mean)*(x - mean));
+			}
+			else {
+				diff_sum = diff_sum + ((mean - x)*(mean - x));
+			}
+      	}
+
+    	var = (diff_sum) / (len as f64);
+        std_dev = libm::sqrt(var);
+	}
+
+	(mean,std_dev)
 }
